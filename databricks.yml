@@ -1,0 +1,25 @@
+# Asset Bundle for the Rearc data quest. Phase 2: the schema and Volumes only.
+# The pipeline is added in Phase 4. Serverless only: no cluster settings anywhere.
+bundle:
+  name: rearc_data_quest
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for every resource
+    default: workspace
+  schema:
+    description: Schema holding the Volumes and pipeline tables
+    default: rearc_quest
+
+targets:
+  # No `mode: development`: it would prefix every name with the workspace username,
+  # and with one developer in one workspace there's nothing to isolate (D26).
+  dev:
+    default: true
+    workspace:
+      # Pinning the host means a deploy with the wrong profile fails instead of
+      # landing in another workspace.
+      host: https://dbc-faf5bf41-0e82.cloud.databricks.com

@@ -1,0 +1,28 @@
+# Three Volumes, separated by purpose rather than by folder convention (D8, D10).
+# schema_name references the schema resource so the bundle creates the schema first.
+resources:
+  volumes:
+    raw:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.rearc_quest.name}
+      name: raw
+      volume_type: MANAGED
+      comment: Exactly what the sources currently publish. The only Volume the pipeline reads.
+
+    archive:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.rearc_quest.name}
+      name: archive
+      volume_type: MANAGED
+      comment: Every version ingestion has written, named by SHA-256 (D10).
+      # D27: the only Volume that can't be rebuilt. This blocks bundle destroy and
+      # forced recreation, but NOT removing this block from the config (known CLI gap).
+      lifecycle:
+        prevent_destroy: true
+
+    state:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.rearc_quest.name}
+      name: state
+      volume_type: MANAGED
+      comment: Ingestion manifest. Never read by the pipeline (D8).

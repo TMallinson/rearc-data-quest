@@ -1,0 +1,9 @@
+resources:
+  schemas:
+    rearc_quest:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+      comment: Rearc data quest - BLS productivity and DataUSA population, raw files to Gold.
+      # D27: deleting the schema may delete its Volumes, including archive.
+      lifecycle:
+        prevent_destroy: true

@@ -169,3 +169,40 @@
 - **Verification:**
   - pytest: 65 passed, including the new D25 test.
   - `tool_user_agent()` resolves to `rearc-ingest/0.1.0 (+https://github.com/tmallinson/rearc-data-quest)`.
+
+### Phase 2: bundle, schema and Volumes
+- **D26 (my decision):** no `mode: development`. Claude showed that dev mode resolved the
+  schema to `dev_<username>_rearc_quest`, and that `presets.name_prefix: ""` didn't remove
+  the prefix.
+- **D27 (my instruction): `prevent_destroy` on the archive Volume and the schema.**
+  - Claude confirmed the setting exists in CLI v1.22.1's bundle schema.
+  - Claude found the open CLI issue (databricks/cli#4872): removing a resource from the
+    config deletes it despite the flag. The fix, PR #7499, is unmerged.
+  - Claude ran plan-only tests:
+    - a rename is an in-place update;
+    - a removed block plans a delete with no error;
+    - a schema move plans a recreate with no error.
+  - Whether a real deploy or destroy refuses is unverified.
+- **Correction:** Claude's first D27 draft claimed the flag "blocks forced recreation".
+  The plan test didn't show that, so the text was changed to record only what was tested.
+- **Verification:**
+  - `bundle validate --strict`: OK.
+  - Resolved names: `workspace.rearc_quest` with Volumes `raw`, `archive`, `state`.
+  - `bundle plan`: 4 to add, 0 to delete.
+  - `bundle deploy`: 4 created.
+  - `schemas get` and `volumes list` show all four, MANAGED.
+  - A plan after deploying shows 0 changes.
+  - The 35 files the bundle uploaded exclude `private/`, `.env` and `.venv`.
+- **Destroy test:**
+  - Claude's non-interactive `bundle destroy` was refused before doing anything, because
+    it needed `--auto-approve`. Claude didn't add the flag without my approval, as the
+    CLI's own message asks.
+  - **I ran the destroy myself, interactively.** `prevent_destroy` refused the whole
+    destroy and listed the schema and the archive Volume. Nothing was deleted, including
+    the unprotected Volumes.
+  - Claude verified afterwards: all four resources exist, and the plan shows 0 changes.
+    The exact output is recorded in D27.
+- **Automated mitigation for databricks/cli#4872 (my request):**
+  `tests/test_bundle_config.py` fails if the archive Volume or the schema is missing or
+  unprotected. It has two self-tests. pyyaml was added as a dev dependency.
+  pytest: 68 passed.

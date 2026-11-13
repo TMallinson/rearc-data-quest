@@ -661,3 +661,143 @@ and archive file is byte-identical, and `refresh_pending` is set.
 **Limitation:** files removed before the manifest was lost are no longer known to have
 been removed. That doesn't matter: they're absent from both the listing and raw, so
 nothing reads them.
+
+---
+
+## D26. No `mode: development` on the bundle target
+
+**Status:** Decided 2026-11-13
+
+**Evidence:**
+- With `mode: development`, `bundle validate` resolved the schema to
+  `workspace.dev_<workspace username>_rearc_quest`.
+- Setting `presets.name_prefix: ""` did not remove the prefix.
+- With no `mode`, the names resolve exactly as intended: `workspace.rearc_quest` and its
+  three Volumes.
+
+**Decision:** the `dev` target has no `mode`. In Phase 4 the pipeline sets
+`development: true` explicitly.
+
+**Rationale:**
+- Development mode exists to isolate per-developer copies of resources in a shared
+  workspace. With one developer in one workspace, there's nothing to isolate.
+- It would also put my workspace username in every schema and table name, including
+  the screenshots in the submission.
+
+**For PROCESS.md trade-offs:** on a client project, use one development target per
+developer (with `mode: development`, so copies are isolated) plus a production target
+(`mode: production`) that runs as a service principal, not as a person.
+
+---
+
+## D27. `prevent_destroy` on the archive Volume and the schema
+
+**Status:** Decided 2026-11-13
+
+**Why these two:**
+
+| Volume | Can it be rebuilt? |
+|---|---|
+| `raw` | Yes: it mirrors what the sources publish now, so it can be re-downloaded. |
+| `state` | Yes: per D25, deleting the manifest and re-running rebuilds it. |
+| `archive` | **No.** Superseded versions that BLS no longer publishes can't be re-downloaded. |
+
+- So `archive` gets `lifecycle.prevent_destroy: true`.
+- The schema gets it too. Deleting the schema may delete the Volumes inside it.
+  - I found no authoritative statement on this for bundles.
+  - The indirect evidence: the bundle warns that "underlying data may be lost" when a
+    schema is deleted or recreated (databricks/cli#3514), and the UC API deletes
+    non-empty schemas with `force`.
+  - Protecting the schema costs nothing, because it's never meant to be destroyed.
+- `raw` and `state` are deliberately left unprotected.
+
+**What the setting does (CLI v1.22.1):**
+- It exists for both schemas and Volumes in the bundle JSON schema.
+- **Documented behaviour:** it blocks `bundle destroy` and changes that force a resource
+  to be recreated, as long as the resource is **still in the configuration**.
+- **Tested with `bundle plan` only (2026-11-13; plan changes nothing):**
+
+  | Temporary edit to the config | Plan result |
+  |---|---|
+  | Rename the archive Volume | `update volumes.archive`: an in-place rename, nothing destroyed, so the flag isn't involved |
+  | Remove the archive block | `delete volumes.archive`, **no error**: confirms the known risk below |
+  | Move the archive Volume to schema `default` | `recreate volumes.archive` (1 delete, 1 add), **no error or warning** |
+
+- At this point it was unverified whether an actual `bundle deploy` or `bundle destroy`
+  refuses. The plan doesn't show the check. The destroy test below settles it for
+  `destroy`.
+
+**Destroy test (2026-11-13), run while all three Volumes were empty:**
+- **Pre-checks:**
+  - `raw`, `archive` and `state` each listed 0 entries.
+  - The schema held only those three Volumes, with no tables or functions.
+  - `bundle summary` showed the bundle managing exactly the schema and the three Volumes.
+- **Attempt 1:** `databricks bundle destroy --profile rearc`, run non-interactively.
+  - Exit code 1. **Nothing was deleted.** The CLI stopped before reaching any per-resource
+    check, so `prevent_destroy` was never exercised. Exact output:
+
+    ```
+    Error: this command will destroy all resources deployed by this bundle, including workspace files in the deployment directory.
+    Deleting data assets such as schemas, pipelines, or volumes may cause permanent data loss and should be carefully reviewed.
+    To proceed, use --auto-approve.
+
+    Note for AI agents (claude-code): do not retry with the flag suggested above
+    unless the user has explicitly approved it. The flag bypasses a safety check
+    and the operation may be irreversible.
+    ```
+
+  - Afterwards: the schema and all three Volumes exist, and `bundle plan` shows 0 changes.
+  - **Takeaway:** a non-interactive destroy without `--auto-approve` is itself a guard.
+- **Attempt 2:** I ran `databricks bundle destroy --profile rearc` myself, interactively,
+  in my terminal. It was **refused, and nothing was deleted.** Exact output:
+
+  ```
+  Error: resources.schemas.rearc_quest has lifecycle.prevent_destroy set, but the plan calls for this resource to be recreated or destroyed. To avoid this error, disable lifecycle.prevent_destroy for resources.schemas.rearc_quest
+  resources.volumes.archive has lifecycle.prevent_destroy set, but the plan calls for this resource to be recreated or destroyed. To avoid this error, disable lifecycle.prevent_destroy for resources.volumes.archive
+  ```
+
+  - **Deleted:** nothing. That includes the **unprotected** `raw` and `state` Volumes and
+    the bundle's workspace files.
+  - **Refused:** the whole destroy, before any deletion. Both protected resources were
+    reported.
+  - **Partial outcome:** none. The check runs first and is all-or-nothing.
+  - **Afterwards (Claude checked):**
+    - `workspace.rearc_quest` exists, with Volumes `archive`, `raw` and `state`.
+    - `bundle summary` lists all four.
+    - The bundle files folder is still present.
+    - `bundle plan` shows 0 to add, 0 to change, 0 to delete, 4 unchanged.
+    - No redeploy was needed.
+
+**Conclusions:**
+- **Verified:** on CLI v1.22.1, `prevent_destroy` blocks `bundle destroy` for resources
+  still in the configuration. It also protects everything else in the bundle as a side
+  effect, because the whole destroy is refused.
+- **Inferred, not tested:** the error wording ("recreated or destroyed") suggests a
+  `bundle deploy` that would recreate a protected resource is refused the same way.
+  `bundle plan` shows no warning for that case (see the table above).
+- **Still true:** removing the resource block from the configuration bypasses the
+  protection (databricks/cli#4872). The pytest below guards against that.
+- **Consequence:** retiring this bundle deliberately now needs two steps. First deploy
+  with `prevent_destroy: false`, then destroy. That's the intended friction.
+
+**Automated mitigation for databricks/cli#4872:** `tests/test_bundle_config.py`.
+- It reads `databricks.yml` and the resource files it includes.
+- It **fails if the archive Volume or the schema is missing from `resources/`, or lacks
+  `lifecycle.prevent_destroy: true`.**
+- Two self-tests run the same check on a temporary copy of the bundle with the flag
+  removed, and with the schema file deleted, and assert both are caught.
+- Running pytest before every deploy turns "never remove these blocks" from a rule
+  people have to remember into a check that fails.
+
+**Known risk (accepted, documented):**
+- **Removing the resource from the configuration still deletes it on the next deploy.**
+  The protection is read only from the current configuration and isn't recorded in
+  bundle state.
+- This is databricks/cli#4872, which is open. The fix, databricks/cli#7499, is unmerged
+  and not in v1.26.0, the latest release its CI checked against.
+- **Mitigation, by process:** never remove the `archive` or `schema` blocks from
+  `resources/`. To retire one deliberately, first deploy it with
+  `prevent_destroy: false`, then remove it. Any change under `resources/` should be
+  checked with `bundle plan` before deploying.
+- **Last-resort mitigation:** Unity Catalog keeps data files for dropped managed tables
+  and Volumes for a 7-day recovery window (DROP SCHEMA documentation).
