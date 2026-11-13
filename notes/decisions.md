@@ -1135,6 +1135,40 @@ loses `.0`; or the whole document stored as one row, with parsing moved to Silve
 - Gating on Silver checks alone would let a Gold table change even if a check on its own
   output then failed.
 
+**Failure-path test on the real pipeline (2026-11-13), evidence in
+`docs/evidence/phase6_gate_failure_test.txt`:**
+- **Method:**
+  - A temporary, uncommitted change required Q1 to cover 7 years.
+  - It was validated, deployed and run in update `d362daab`.
+  - Then it was reverted (git diff empty), redeployed and run in update `4c1736fd`.
+- **`DESCRIBE HISTORY` doesn't work on pipeline materialized views** ("expects a table but
+  ... is a view"). "Unchanged" was shown instead by three things: `DESCRIBE TABLE
+  EXTENDED` refresh information, `information_schema.tables.last_altered`, and each
+  dataset's status in the event log.
+- **Failing update `d362daab`: FAILED** "since flow workspace.rearc_quest.dq_gate failed an
+  expectation check".
+  - Violated: `q1_six_years`, with `failed_records: 1`. The gate row it judged showed
+    `q1_years: 6` and every other check at 0.
+  - 28 datasets COMPLETED: Bronze, Silver, the checks and the candidates.
+  - `dq_gate` FAILED.
+  - **`gold_q1_population_stats`, `gold_q2_best_year`, `gold_q3_series_population` and
+    `dq_q2_coverage` were SKIPPED.**
+- **Gold unchanged:** `Last Refreshed` stayed at 22:43:18, and `last_altered` didn't move,
+  for all three.
+  - `Latest Refresh Status` became `Failed`, pointing at `d362daab`. That field records
+    the latest refresh *attempt*, not a change to the data.
+  - `silver_pr_data`, upstream of the gate, did refresh (22:42:54 → 23:02:53).
+- **After the revert, update `4c1736fd` COMPLETED** with all 33 datasets, including the
+  gate and the three Gold tables (refreshed 23:06:37). Q1 is unchanged: 6 years, mean
+  322,069,808.
+- **Final state:** `git status` clean; `bundle plan` 0 changes.
+
+**For PROCESS.md:** after a failed update, Silver can be newer than Gold. Consumers of Gold
+see the last audited answers, while Silver already reflects the new input. That's the
+intended trade-off: Gold is never wrong, but may be stale until the cause is fixed. In
+production an alert on pipeline failure would surface it, and Gold's `Latest Refresh
+Status: Failed` shows it to anyone who inspects the table.
+
 ---
 
 ## D37. SQL is primary for all three Gold answers; PySpark versions are private alternatives

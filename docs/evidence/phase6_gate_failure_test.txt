@@ -1,0 +1,89 @@
+# Phase 6: gate failure-path test on the real pipeline (2026-11-13)
+# Purpose: show that a failing fail-level check stops the update before any published
+# Gold table changes (D36, write-audit-publish: "stale, but never wrong").
+# DESCRIBE HISTORY is not supported on pipeline materialized views ("is a view"), so
+# "unchanged" is shown by DESCRIBE TABLE EXTENDED refresh information, by
+# information_schema.tables.last_altered, and by each dataset's status in the event log.
+
+## 1. Temporary change (uncommitted), deployed after bundle validate --strict
+-  CONSTRAINT q1_six_years EXPECT (q1_years = 6 AND q1_first_year = 2013 AND q1_last_year = 2018)
++  CONSTRAINT q1_six_years EXPECT (q1_years = 7 AND q1_first_year = 2013 AND q1_last_year = 2018)
+
+## 2. Refresh identity BEFORE the failing update (last good update d0b55ee5)
+  gold_q1_population_stats     last_refreshed=2026-11-13T22:43:18Z  latest_refresh_update=d0b55ee5  status=Succeeded  last_altered=2026-11-13T22:43:18.648Z
+  gold_q2_best_year            last_refreshed=2026-11-13T22:43:18Z  latest_refresh_update=d0b55ee5  status=Succeeded  last_altered=2026-11-13T22:43:18.626Z
+  gold_q3_series_population    last_refreshed=2026-11-13T22:43:18Z  latest_refresh_update=d0b55ee5  status=Succeeded  last_altered=2026-11-13T22:43:18.648Z
+  silver_pr_data               last_refreshed=2026-11-13T22:42:54Z  latest_refresh_update=d0b55ee5  status=Succeeded  last_altered=2026-11-13T22:42:55.173Z
+
+## 3. Failing update d362daab: per-dataset status and errors (pipeline event log)
+## final status per dataset
+               missingFlowName
+  COMPLETED    bronze_population
+  COMPLETED    bronze_pr_class
+  COMPLETED    bronze_pr_data
+  COMPLETED    bronze_pr_duration
+  COMPLETED    bronze_pr_footnote
+  COMPLETED    bronze_pr_measure
+  COMPLETED    bronze_pr_period
+  COMPLETED    bronze_pr_seasonal
+  COMPLETED    bronze_pr_sector
+  COMPLETED    bronze_pr_series
+  COMPLETED    dq_alldata_input
+  COMPLETED    dq_current_in_alldata
+  COMPLETED    dq_gold_parity
+  COMPLETED    dq_unique_keys
+  COMPLETED    q1_candidate_pyspark
+  COMPLETED    q1_candidate_sql
+  COMPLETED    q2_candidate_pyspark
+  COMPLETED    q2_candidate_sql
+  COMPLETED    q3_candidate_pyspark
+  COMPLETED    q3_candidate_sql
+  COMPLETED    silver_population
+  COMPLETED    silver_pr_data
+  COMPLETED    silver_pr_duration
+  COMPLETED    silver_pr_footnote
+  COMPLETED    silver_pr_measure
+  COMPLETED    silver_pr_period
+  COMPLETED    silver_pr_sector
+  COMPLETED    silver_pr_series
+  FAILED       dq_gate
+  SKIPPED      dq_q2_coverage
+  SKIPPED      gold_q1_population_stats
+  SKIPPED      gold_q2_best_year
+  SKIPPED      gold_q3_series_population
+## update progress and error events
+  23:01:46 INFO  update_progress                           Update d362da is INITIALIZING.
+  23:02:03 INFO  update_progress                           Update d362da is SETTING_UP_TABLES.
+  23:02:08 INFO  update_progress                           Update d362da is RUNNING.
+  23:03:34 ERROR flow_progress    dq_gate                  Flow 'workspace.rearc_quest.dq_gate' has FAILED.
+           detail: [{"name":"q1_six_years","dataset":"workspace.rearc_quest.dq_gate","failed_records":1}]
+  23:03:36 ERROR update_progress                           Update d362da is FAILED since flow workspace.rearc_quest.dq_gate failed an expectation check.
+           detail: [EXPECTATION_VIOLATION.VERBOSITY_ALL] Flow 'workspace.rearc_quest.dq_gate' failed to meet the expectation. Violated expectations: 'q1_six_years'. Input data: 'Input could not be determined from the violating output record.'. Output record: '{"duplicate_keys":0,"alldata_rows":92328,"parity_failures":0,"q1_years":6,"q1_first_year":2013,"q1_last_year":2018,"q2_rows":337,"q2_series":337,"q2_invalid_basis":0,"q3_rows":39,"silver_data_rows":92328,"silver_series_rows":337,"silver_population_rows":11,"silver_lookup_rows":38}'. Missing input data: true
+
+## 4. Refresh identity AFTER the failing update
+  gold_q1_population_stats     last_refreshed=2026-11-13T22:43:18Z  latest_refresh_update=d362daab  status=Failed  last_altered=2026-11-13T22:43:18.648Z
+  gold_q2_best_year            last_refreshed=2026-11-13T22:43:18Z  latest_refresh_update=d362daab  status=Failed  last_altered=2026-11-13T22:43:18.626Z
+  gold_q3_series_population    last_refreshed=2026-11-13T22:43:18Z  latest_refresh_update=d362daab  status=Failed  last_altered=2026-11-13T22:43:18.648Z
+  silver_pr_data               last_refreshed=2026-11-13T23:02:53Z  latest_refresh_update=d362daab  status=Failed  last_altered=2026-11-13T23:02:53.946Z
+   -> Gold: last_refreshed and last_altered unchanged (22:43:18); not rewritten.
+      'latest_refresh_update/status' records the latest refresh ATTEMPT (the failed update).
+   -> silver_pr_data (upstream of the gate) did refresh: 22:42:54 -> 23:02:53.
+
+## 5. Reverted (git diff empty), validated, redeployed; passing update 4c1736fd
+## update progress and error events
+  23:04:44 INFO  update_progress                           Update 4c1736 is INITIALIZING.
+  23:05:00 INFO  update_progress                           Update 4c1736 is SETTING_UP_TABLES.
+  23:05:02 INFO  update_progress                           Update 4c1736 is RUNNING.
+  23:06:45 INFO  update_progress                           Update 4c1736 is COMPLETED.
+  all 33 datasets COMPLETED, including dq_gate and the three gold_* tables
+
+## 6. Refresh identity AFTER the passing update
+  gold_q1_population_stats     last_refreshed=2026-11-13T23:06:37Z  latest_refresh_update=4c1736fd  status=Succeeded  last_altered=2026-11-13T23:06:38.382Z
+  gold_q2_best_year            last_refreshed=2026-11-13T23:06:37Z  latest_refresh_update=4c1736fd  status=Succeeded  last_altered=2026-11-13T23:06:37.741Z
+  gold_q3_series_population    last_refreshed=2026-11-13T23:06:37Z  latest_refresh_update=4c1736fd  status=Succeeded  last_altered=2026-11-13T23:06:37.761Z
+  silver_pr_data               last_refreshed=2026-11-13T23:05:50Z  latest_refresh_update=4c1736fd  status=Succeeded  last_altered=2026-11-13T23:05:51.413Z
+
+## 7. Final state
+  git status: clean (0 uncommitted files) before this evidence was added
+  databricks bundle plan: 0 to add, 0 to change, 0 to delete, 5 unchanged
+  gold_q1_population_stats: years=6, mean=322069808, stddev_population=3796119.936934378

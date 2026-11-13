@@ -408,3 +408,19 @@
   - I accepted Claude's D36 interpretation, recorded as write-audit-publish.
   - I accepted dropping `period_name`, with the principle that descriptive attributes
     live in lookups, not facts (D35).
+
+### Gate failure-path test (my instruction)
+- **Correction to my plan:** I asked for Delta versions from `DESCRIBE HISTORY`. Claude
+  found it isn't supported on pipeline materialized views. It used `DESCRIBE TABLE
+  EXTENDED` refresh information, `information_schema.last_altered` and per-dataset
+  event-log status instead, and explained why comparing contents couldn't show "not
+  refreshed": the data didn't change.
+- **Result:** with Q1 temporarily required to cover 7 years, update `d362daab` FAILED at
+  `dq_gate` (`q1_six_years`). The three Gold tables were SKIPPED, with `Last Refreshed`
+  and `last_altered` unchanged. Silver did refresh.
+- **After the revert:** update `4c1736fd` COMPLETED with all 33 datasets. `git status` was
+  clean and `bundle plan` showed 0 changes.
+- Evidence saved as `docs/evidence/phase6_gate_failure_test.txt`; identifier scan clean.
+  Recorded in D36.
+- **Claude's mistake:** its first per-dataset status query took each dataset's last event,
+  which often has no status. It re-queried using the last event that carries one.
