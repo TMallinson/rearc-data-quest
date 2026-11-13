@@ -1,0 +1,5 @@
+private/
+.venv/
+.env
+.DS_Store
+.databricks/
