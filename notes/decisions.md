@@ -1075,3 +1075,77 @@ loses `.0`; or the whole document stored as one row, with parsing moved to Silve
   same update unless Gold depends on the check.
 - Gold's design must make the check datasets upstream of the Gold tables, or otherwise
   guarantee that a failing check leaves Gold unchanged.
+
+---
+
+## D35. Labels live only in silver_pr_series and are joined in Gold
+
+**Status:** Decided 2026-11-13; implemented in Phase 6
+
+**Decision:**
+- Remove `label`, `measure_text`, `sector_name` and `duration_text` from `silver_pr_data`.
+- They stay in `silver_pr_series`, and Gold joins them in.
+- Done as part of the Phase 6 update, so it costs no extra update.
+- **`period_name`** (Claude's addition, accepted) is also dropped from the published
+  `silver_pr_data`. It's still used in the staged view by the `period_known` check.
+- **Principle:** descriptive attributes live in the lookup tables, not in the facts.
+  `silver_pr_data` holds keys and measures; names and labels come from
+  `silver_pr_series` and the lookups, joined where they're needed.
+
+**Rationale:**
+- One copy of each label means one place to correct it.
+- `silver_pr_data` stays a narrow fact table, with no label text repeated on 92,328 rows.
+
+---
+
+## D36. Gold depends on one gate table that reads every fail-level check
+
+**Status:** Decided 2026-11-13; closes D34's open item
+
+**Decision:**
+- One gate table, `dq_gate`, reads every **fail-level** check. Every published Gold table
+  reads the gate, so it's downstream of it.
+- **Warn-level checks don't gate:** `dq_current_in_alldata` and Q2 coverage.
+
+**Rationale, for PROCESS.md:**
+- When a check fails, the update stops before Gold is refreshed. Readers keep seeing the
+  last good answers: **"stale, but never wrong"**.
+- Production would add an alert on pipeline failure, so that staleness is noticed.
+
+**Implementation: the write-audit-publish pattern** (Claude's reading of "every fail-level check", accepted after my review):
+- Some fail-level checks are about the answers themselves (D13): Q1 has exactly six years
+  2013–2018; Q2 has one row per series and a valid basis; Q3 has at least one row; and
+  SQL/PySpark parity.
+- So each answer is first computed into **private candidate tables**:
+  `q*_candidate_sql` (primary) and `q*_candidate_pyspark` (alternative).
+- `dq_gold_parity` compares the two candidates.
+- `dq_gate` reads:
+  - the Silver checks (`dq_unique_keys`, `dq_alldata_input`);
+  - the Silver tables themselves, so their row-level fail expectations are upstream;
+  - `dq_gold_parity`;
+  - the candidates' output checks.
+- The published `gold_*` tables are SQL `SELECT`s from the SQL candidate, cross-joined to
+  the one-row gate.
+- Any failing check therefore stops the update before any `gold_*` table changes.
+- **As write-audit-publish (WAP):**
+  - **Write:** candidates are written privately, in SQL and PySpark.
+  - **Audit:** the gate checks them, including SQL/PySpark parity, together with every
+    other fail-level check.
+  - **Publish:** the SQL version is copied through the gate into the published table.
+- Gating on Silver checks alone would let a Gold table change even if a check on its own
+  output then failed.
+
+---
+
+## D37. SQL is primary for all three Gold answers; PySpark versions are private alternatives
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- Each Gold answer's primary logic is a SQL materialized view.
+- Each PySpark version is a private dataset: computed and parity-checked, but not
+  published.
+
+**Rationale:** Gold serves SQL consumers: analysts, Genie and dashboards. Bronze and
+Silver are Python because they need code-level checks, such as the header check
+(D29) and the staged-view expectations (D34).

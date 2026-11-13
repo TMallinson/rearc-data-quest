@@ -360,3 +360,51 @@
     years.
   - The check data was right; the summary was wrong.
 - **My acceptance of Claude's Silver choices,** with my reasons, is recorded in D34.
+
+### Phase 6: Gold, gate and parity
+- **My decisions:**
+  - D35: labels only in `silver_pr_series`, joined in Gold.
+  - D36: one gate table reading every fail-level check.
+  - D37: SQL primary; PySpark as private alternatives.
+- **Claude's reading of D36, flagged for review:** some fail checks are about the answers
+  themselves (Q1 years, Q2 one row per series, Q3 non-empty, parity).
+  - So answers are first computed into private candidates (`q*_candidate_sql` and
+    `q*_candidate_pyspark`).
+  - The gate reads those checks, and the published `gold_*` tables are `SELECT`s from the
+    SQL candidate cross-joined to the gate.
+  - Claude also dropped `period_name` from the published `silver_pr_data`, alongside D35.
+- **Before spending the update,** Claude dry-ran the three SQL candidate queries on the
+  warehouse against Silver. All succeeded.
+- **Claude's mistakes:**
+  - A third shell-quoting error in an inline Python printer; switched to script files.
+  - Reported the update as taking about 6 minutes from the poll script. The event log
+    shows 1m52s (82s of dataset work); the poll's observation lagged.
+- **Verification** (update `d0b55ee5`, completed; pytest 101 passed; strict validation OK):
+  - **Q1:** 6 years (2013–2018); mean 322,069,808; population SD 3,796,119.94; sample SD
+    4,158,441.04. This matches the session 1 profile (322,069,808 / 3,796,120 /
+    4,158,441).
+  - **Q2:**
+    - 337 rows for 337 series: 283 `quarterly sum`, 54 `annual value`.
+    - 0 series with no complete year (`dq_q2_coverage` 337 passed, 0 failed).
+    - 7 series with ties, each with exactly one other tied year (3 annual, 4 quarterly).
+  - **Q2 hand checks from the raw file's text** (Python `Decimal`, no Spark):
+    - PRS30006032: 1994, total 14.6 (1.7 + 4.0 + 4.2 + 4.7); 1987 and 2026 incomplete.
+    - PRS84006021: 1964 and 2010 tied at 4.9, so the earliest, 1964, wins.
+    - Both match Gold exactly.
+  - **Q3:** 39 rows, 1988–2026. 11 have population (2013–2019 and 2021–2024). 28 have
+    none: 1988–2012, 2020, 2025 and 2026.
+  - **Parity:** q1 1 row, q2 337, q3 39. 0 rows only in SQL and 0 only in PySpark for
+    each.
+  - **Gate:**
+    - All 7 fail checks passed.
+    - Event-log `flow_definition`: each `gold_*` table's inputs are exactly `dq_gate` and
+      its SQL candidate.
+    - `dq_gate`'s 14 inputs include every fail-level check and Silver table, and no
+      warn-level check.
+  - **D35:** `silver_pr_data` columns are now `series_id, year, period, value,
+    footnote_codes, ingested_at`, with no labels.
+  - **Expectations:** all 47 in the update passed with 0 failures.
+- **Phase 6 sign-off (my review):**
+  - I accepted Claude's D36 interpretation, recorded as write-audit-publish.
+  - I accepted dropping `period_name`, with the principle that descriptive attributes
+    live in lookups, not facts (D35).

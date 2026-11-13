@@ -1,8 +1,9 @@
-"""Silver: typed, trimmed, deduplicated data from AllData only, with labels joined in.
+"""Silver: typed, trimmed, deduplicated data from AllData only.
 
 Decisions: D3/D4 ranking logic is Gold's, so Silver keeps every period including Q05;
-D5 labels; D6 (Silver reads AllData only); D13 expectations; D14 trimming; D15 integer
-year; D16/D33 DECIMAL(12,3); D30 exact AllData file match.
+D5 labels in silver_pr_series only, joined in Gold (D35); D6 (Silver reads AllData
+only); D13 expectations; D14 trimming; D15 integer year; D16/D33 DECIMAL(12,3); D30
+exact AllData file match.
 
 Expectations that need helper columns (raw text, flags) sit on temporary views. The
 published tables select the clean columns from those views.
@@ -102,10 +103,8 @@ def silver_pr_data_staged() -> DataFrame:
         .withColumnRenamed("year", "year_text")
         .withColumnRenamed("value", "value_text")
     )
-    series = spark.read.table("silver_pr_series").select(
-        "series_id", "label", "measure_text", "sector_name", "duration_text",
-        F.lit(True).alias("series_known"),
-    )
+    # Only for the series_in_catalog check. Labels are joined in Gold, not here (D35).
+    series = spark.read.table("silver_pr_series").select("series_id", F.lit(True).alias("series_known"))
     periods = spark.read.table("silver_pr_period").select("period", "period_name")
     known_footnotes = spark.read.table("silver_pr_footnote").agg(
         F.collect_set("footnote_code").alias("known_footnotes")
@@ -119,7 +118,7 @@ def silver_pr_data_staged() -> DataFrame:
             F.expr("try_cast(year_text AS INT)").alias("year"),  # D15
             "period", "period_name", "value_text",
             F.expr(f"try_cast(value_text AS {VALUE_TYPE})").alias("value"),
-            "footnote_codes", "label", "measure_text", "sector_name", "duration_text",
+            "footnote_codes",
             F.coalesce(F.col("series_known"), F.lit(False)).alias("series_known"),
             F.expr(
                 "footnote_codes IS NULL OR "
@@ -136,12 +135,12 @@ def silver_pr_data_staged() -> DataFrame:
 
 @dp.materialized_view(
     name="silver_pr_data",
-    comment="AllData observations: typed (year INT, value DECIMAL(12,3)), trimmed, deduplicated, labelled.",
+    comment="AllData observations: typed (year INT, value DECIMAL(12,3)), trimmed, deduplicated. "
+    "Labels live in silver_pr_series and are joined in Gold (D35).",
 )
 def silver_pr_data() -> DataFrame:
     return spark.read.table("silver_pr_data_staged").select(
-        "series_id", "year", "period", "period_name", "value", "footnote_codes",
-        "label", "measure_text", "sector_name", "duration_text", "ingested_at",
+        "series_id", "year", "period", "value", "footnote_codes", "ingested_at",
     )
 
 
