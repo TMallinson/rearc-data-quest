@@ -1,0 +1,23 @@
+# Phase 3: Volume state before vs after the second run (2026-11-13)
+# Every file in raw, archive and state, listed via the Databricks Files API.
+# Compared on size and last_modified; manifest compared by SHA-256.
+
+files before: 27  after: 27  added: []  removed: []
+files with changed size or last_modified: 0 []
+  raw/bls/pr/pr.class                      2026-11-13 21:15:45 UTC  unchanged
+  raw/bls/pr/pr.contacts                   2026-11-13 21:15:46 UTC  unchanged
+  raw/bls/pr/pr.data.0.Current             2026-11-13 21:15:47 UTC  unchanged
+  raw/bls/pr/pr.data.1.AllData             2026-11-13 21:15:49 UTC  unchanged
+  raw/bls/pr/pr.duration                   2026-11-13 21:15:50 UTC  unchanged
+  raw/bls/pr/pr.footnote                   2026-11-13 21:15:51 UTC  unchanged
+  raw/bls/pr/pr.measure                    2026-11-13 21:15:52 UTC  unchanged
+  raw/bls/pr/pr.period                     2026-11-13 21:15:53 UTC  unchanged
+  raw/bls/pr/pr.seasonal                   2026-11-13 21:15:54 UTC  unchanged
+  raw/bls/pr/pr.sector                     2026-11-13 21:15:55 UTC  unchanged
+  raw/bls/pr/pr.series                     2026-11-13 21:15:56 UTC  unchanged
+  raw/bls/pr/pr.txt                        2026-11-13 21:15:57 UTC  unchanged
+  raw/datausa/population.json              2026-11-13 21:15:58 UTC  unchanged
+  state/manifest.json                      2026-11-13 21:15:59 UTC  unchanged
+manifest sha256 before: 2f8fd9ae15e5f272f6b4a3f975238e6794c43f0cbc392982c1c1d504d584317b
+manifest sha256 after:  2f8fd9ae15e5f272f6b4a3f975238e6794c43f0cbc392982c1c1d504d584317b  -> identical
+refresh_pending after: True

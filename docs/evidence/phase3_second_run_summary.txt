@@ -1,0 +1,14 @@
+# Phase 3: second ingestion run, no source changes (2026-11-13)
+# Command: rearc-ingest --no-refresh   (exit code 0)
+
+Ingestion run
+  listed files:      12
+  BLS downloads:     0
+  DataUSA fetches:   1
+  archive writes:    0
+  raw writes:        0
+  raw deletes:       0
+  manifest writes:   0
+  total writes:      0
+  pipeline update: not started
+  refresh pending: yes (the next run with refresh enabled starts an update)

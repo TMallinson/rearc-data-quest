@@ -206,3 +206,43 @@
   `tests/test_bundle_config.py` fails if the archive Volume or the schema is missing or
   unprotected. It has two self-tests. pyyaml was added as a dev dependency.
   pytest: 68 passed.
+
+### Phase 3: real ingestion and the no-op proof
+- **My instructions:**
+  - Push after each approved phase commit; added to CLAUDE.md.
+  - Run the dry run, first run, independent byte check and second-run proof, in that
+    order.
+  - Save the evidence to `docs/evidence/`.
+- **Dry run:** the real listing showed 12 files. 13 were planned as new (12 BLS plus
+  DataUSA), and nothing was written: all three Volumes stayed empty.
+- **First run (`--no-refresh`):**
+  - 12 BLS downloads and 1 DataUSA fetch; 13 archive, 13 raw and 13 manifest writes.
+  - Verified with a read-only scratch script:
+    - 13 files in raw, 13 in archive (each named by its SHA-256), 1 manifest;
+    - `refresh_pending` true;
+    - every raw file hashes to its manifest SHA-256;
+    - every archive copy is byte-identical to raw;
+    - every BLS size equals its listing size.
+  - The DataUSA archive hash equals the D18 test hash.
+  - **D22 settled:** uploads create parent folders themselves, so no code change.
+- **Independent byte check:** `pr.data.0.Current` fetched with curl (BLS User-Agent from
+  `.env`) and the raw copy fetched with `databricks fs cp` are byte-identical:
+  - 1,943,714 bytes each, SHA-256 `96b35c3f…`, and `cmp` finds no differences;
+  - all 46,160 lines end in CRLF in both copies.
+- **Second run (`--no-refresh`):**
+  - The tool's counters are all 0. It made only the listing request and the DataUSA fetch.
+  - Snapshots before and after: all 27 files have unchanged size and last-modified
+    time, with none added or removed.
+  - The manifest SHA-256 is identical (`2f8fd9ae…`), and `refresh_pending` is still true.
+  - The evidence is saved in `docs/evidence/`. An identifier scan found nothing personal.
+- **Claude's mistakes, caught by guardrails:**
+  - A cleanup `rm -f $D/*` on a variable path was blocked by the safety check. It was
+    unnecessary; Claude switched to a fresh directory.
+  - Earlier, a `git push` bundled into the Phase 2 commit command was blocked because I
+    had approved only a commit.
+- **Phase 3 sign-off:**
+  - The snapshot, compare and check scripts are now one read-only
+    `scripts/volume_check.py`. A test greps it for write or delete calls. It ran
+    against the real Volumes with no problems.
+  - The README documents it, and has an "expected warnings" note separating the SDK
+    endpoint 403 from a BLS 403.

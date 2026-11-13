@@ -601,6 +601,20 @@ API's output actually varies between calls.
   parent folders.
 - If it doesn't, create them explicitly in `SdkVolume` before writing.
 
+**Result (Phase 3, 2026-11-13): no change needed.**
+- The first real run uploaded to paths whose parent folders didn't exist, for example
+  `raw/bls/pr/`, `raw/datausa/` and `archive/bls/pr/pr.class/`. All 26 data uploads and
+  13 manifest writes succeeded.
+- Listing the Volumes afterwards showed every file at its intended path.
+- So `files.upload` creates parent folders itself, and `SdkVolume` keeps no explicit
+  directory step.
+
+**Side observation:** every SDK Files API session logs
+`WARNING:databricks.sdk.mixins.files:Unexpected status resolving file endpoints (403 ...), using the default endpoints`.
+- This is the SDK probing an optional endpoint, which Free Edition refuses, then falling
+  back to the standard Files API.
+- Uploads and downloads work. It is unrelated to the BLS 403 rule and needs no action.
+
 ---
 
 ## D23. The manifest is rewritten after every file (accepted trade-off)

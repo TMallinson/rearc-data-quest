@@ -12,6 +12,8 @@ Design decisions and their evidence are in [notes/decisions.md](notes/decisions.
 |---|---|
 | `src/rearc_ingest/` | Local ingestion package and the `rearc-ingest` command |
 | `tests/` | pytest suite; no network and no Databricks needed |
+| `scripts/volume_check.py` | Read-only checks of the Volumes against the manifest |
+| `docs/evidence/` | Saved run output used as evidence in PROCESS.md |
 | `databricks.yml`, `resources/` | Asset Bundle: schema, Volumes and (later) the pipeline |
 | `notes/` | Decision log and AI-usage log |
 
@@ -75,6 +77,50 @@ What a run does:
 | 3 | HTTP 403: the server refused the request | Stop. Check `BLS_USER_AGENT` and the BLS access policy. Never retried automatically. |
 | 4 | Removal guard refused the run | Nothing was changed. Check the source, then re-run with `--allow-removals` if the removals are genuine (D11). |
 | 5 | Ingested, but the pipeline update couldn't be started | The change stays marked as pending. The next run starts the update (D19). |
+
+### Expected warnings
+
+Every run, and every use of `scripts/volume_check.py`, prints a line like this:
+
+```
+WARNING:databricks.sdk.mixins.files:Unexpected status resolving file endpoints (403, request ID ...), using the default endpoints.
+```
+
+- **This is not the BLS 403.** It comes from the Databricks SDK, not from BLS. Before its
+  first Files API call, the SDK probes an optional endpoint. Databricks Free Edition
+  refuses that probe, so the SDK falls back to the standard Files API, and uploads and
+  downloads work normally.
+- **No action is needed.** The run's exit code is unaffected. See D22 in the decision log.
+- **How to tell them apart:** a real BLS 403 stops the run with exit code 3 and a
+  `STOPPED (403)` message naming a `download.bls.gov` URL.
+
+## Checking the Volumes
+
+`scripts/volume_check.py` is a read-only check of the Volumes. It only lists and downloads
+files and never writes or deletes anything; a test enforces this.
+
+```bash
+.venv/bin/python scripts/volume_check.py check
+.venv/bin/python scripts/volume_check.py snapshot before.json
+.venv/bin/python scripts/volume_check.py compare before.json after.json
+```
+
+| Command | What it checks |
+|---|---|
+| `check` | For every manifest entry: the raw file's SHA-256 matches the manifest; the archive copy is named by that hash and is byte-identical to raw; a BLS raw file's size equals its listing size. |
+| `snapshot` | Records every file's size and last-modified time in `raw`, `archive` and `state`, plus the manifest's SHA-256 and `refresh_pending`. |
+| `compare` | Compares two snapshots. It reports files added, removed or changed, and whether the manifest hash differs. |
+
+Exit codes: 0 when there are no problems, 1 otherwise.
+
+When to run it:
+- **After any ingestion run that wrote something:** run `check`, to confirm the Volumes
+  and the manifest agree.
+- **To prove a run wrote nothing:** run `snapshot` before the run and `snapshot` after
+  it, then `compare` the two. That's how
+  [docs/evidence/](docs/evidence/phase3_second_run_unchanged.txt) was produced.
+- **Before trusting the Volumes after something unusual:** a crash, a manual change in
+  the workspace, or a manifest recovery (D25).
 
 ## Volumes
 
