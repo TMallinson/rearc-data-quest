@@ -40,8 +40,10 @@ class Settings:
     # D11: removal guard.
     max_removals_without_flag: int = 2
     protected_removal_glob: str = "pr.data.*"
-    # D19: the pipeline to refresh after a run that changed raw. Set in Phase 4.
-    pipeline_name: str | None = None
+    # D19: the pipeline to refresh. Must match resources/rearc_quest.pipeline.yml (tested).
+    pipeline_name: str | None = "rearc_quest_pipeline"
+    # D28: start each update in development mode (no automatic retries, faster restarts).
+    pipeline_development: bool = True
     # Politeness and retry policy (CLAUDE.md). max_attempts also bounds size-mismatch retries (D21).
     request_pause_seconds: float = 1.0
     max_attempts: int = 4

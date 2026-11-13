@@ -1,4 +1,4 @@
-"""Start a pipeline update after a run that changed raw (D19). Wired up in Phase 4."""
+"""Start a pipeline update when raw has changed since the last started update (D19)."""
 from __future__ import annotations
 
 from typing import Protocol
@@ -13,9 +13,10 @@ class PipelineTrigger(Protocol):
 
 
 class SdkPipelineTrigger:
-    def __init__(self, client: WorkspaceClient, pipeline_name: str) -> None:
+    def __init__(self, client: WorkspaceClient, pipeline_name: str, *, development: bool) -> None:
         self._client = client
         self._name = pipeline_name
+        self._development = development  # D28: set per update, not on the pipeline
 
     def trigger(self) -> str:
         pipelines = self._client.pipelines
@@ -28,4 +29,7 @@ class SdkPipelineTrigger:
             raise RuntimeError(
                 f"expected exactly one pipeline named {self._name!r}, found {len(matches)}"
             )
-        return pipelines.start_update(pipeline_id=matches[0].pipeline_id).update_id
+        response = pipelines.start_update(
+            pipeline_id=matches[0].pipeline_id, development=self._development
+        )
+        return response.update_id

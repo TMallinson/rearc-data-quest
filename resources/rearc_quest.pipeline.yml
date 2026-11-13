@@ -1,0 +1,19 @@
+# Spark Declarative Pipeline: Bronze (Phase 4), then Silver and Gold.
+# Serverless and triggered: rearc-ingest starts an update when raw has changed (D19).
+resources:
+  pipelines:
+    rearc_quest_pipeline:  # resource keys must be unique across types (the schema is rearc_quest)
+      name: rearc_quest_pipeline  # must match rearc_ingest Settings.pipeline_name (tested)
+      catalog: ${var.catalog}
+      schema: ${resources.schemas.rearc_quest.name}
+      serverless: true
+      continuous: false
+      # No `development:` field: it's deprecated. rearc-ingest starts each update in
+      # development mode instead (D28).
+      root_path: ../src/pipeline
+      libraries:
+        - glob:
+            include: ../src/pipeline/transformations/**
+      configuration:
+        # The only Volume the pipeline reads (D8). State and archive are never referenced.
+        rearc.raw_root: /Volumes/${var.catalog}/${resources.schemas.rearc_quest.name}/${resources.volumes.raw.name}

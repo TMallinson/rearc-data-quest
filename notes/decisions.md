@@ -815,3 +815,152 @@ developer (with `mode: development`, so copies are isolated) plus a production t
   checked with `bundle plan` before deploying.
 - **Last-resort mitigation:** Unity Catalog keeps data files for dropped managed tables
   and Volumes for a 7-day recovery window (DROP SCHEMA documentation).
+
+---
+
+## D28. Pipeline development mode is set per update, not on the pipeline
+
+**Status:** Decided 2026-11-13
+
+**Evidence:**
+- Phase 4 asked for `development: true` on the pipeline.
+- `bundle validate --strict` failed with: `Warning: The "development" property of
+  pipelines is deprecated. Use "mode: development" in your databricks.yml instead.`
+- The bundle JSON schema describes the field as
+  "Deprecated: set development mode for each update instead."
+- `mode: development` was rejected in D26.
+
+**Options:**
+1. Set the flag per update. **Chosen.**
+2. Keep the field and validate without `--strict`.
+3. No development mode.
+
+**Decision:**
+- The pipeline resource has no `development` field.
+- `rearc-ingest` starts each update with `start_update(..., development=True)`,
+  controlled by `Settings.pipeline_development`, which defaults to true.
+
+**Rationale:**
+- It follows the platform's own guidance.
+- It keeps strict validation on every deploy.
+- It keeps D26: no username in table names.
+- Development mode gives no automatic retries and faster restarts, which suits a
+  debugging phase and Free Edition's daily compute quota.
+
+**For PROCESS.md:** a production target would start updates with
+`pipeline_development=False`, so the platform's default retries apply.
+
+**Tests:** `tests/test_refresh.py`:
+- starts a development update on the exact name match only;
+- refuses when zero or several pipelines match.
+
+**D28 follow-up (first update, 2026-11-13): unverified.**
+- `rearc-ingest` called `start_update(development=True)`, and update `c401ffe6` completed.
+- The update API doesn't echo the flag back:
+  - `get_update` shows `config.development: false`. That's the pipeline spec's value,
+    which D28 deliberately leaves unset.
+  - `mode: DEFAULT` refers to triggered versus continuous execution.
+  - The `create_update` event has no details.
+- So there's no API evidence yet that the server honoured the per-update flag. Still to
+  be confirmed in the pipeline UI's update details.
+
+**D28 resolved (2026-11-13): verified.**
+- The pipeline event log's `create_update` event for update `c401ffe6` records the
+  update's own settings. It has a top-level `"development": true`, separate from
+  `config.development: false`, which is the pipeline spec's value.
+- So the per-update flag reached the server and was applied.
+- `get_update`'s API response simply doesn't expose it.
+
+---
+
+## D29. Bronze implementation choices (reviewed and accepted)
+
+**Status:** Decided 2026-11-13
+
+- **Python, not SQL.**
+  - The header names are padded, for example `'series_id        '`.
+  - The header check reads the file's actual header, trims it, and compares it with the
+    expected list (D13). In SQL each padded name would have to be hard-coded, and the
+    check couldn't be written.
+- **Quote handling off (`quote = ""`).**
+  - The BLS files are unquoted TSV. A profile of every raw file found no quote
+    characters.
+  - With quote handling on, a stray `"` in a value such as a series title would make the
+    reader treat the following tabs as part of a quoted field, merging tab-separated
+    columns.
+- **Whitespace trimming off.** Values keep their padding. Trimming is Silver's job (D14).
+- **snake_case renames for DataUSA keys.** They change labels, not values, which is
+  consistent with trimming the BLS header names. Delta column names can't contain spaces
+  without column mapping. The mapping:
+
+  | Source key | Bronze column |
+  |---|---|
+  | `Nation ID` | `nation_id` |
+  | `Nation` | `nation` |
+  | `Year` | `year` |
+  | `Population` | `population` |
+
+- **`pr.seasonal`'s header is `Seasonal_code` / `Seasonal_text`.** It's trimmed only, so
+  the capital S stays in Bronze. Silver may relabel it.
+- **Empty fields arrive as NULL.**
+  - Spark's CSV reader maps an empty field to NULL; in `bronze_pr_data`, 128,533
+    `footnote_codes` values are NULL.
+  - **Accepted:** in unquoted TSV, an empty field and a missing value can't be told apart,
+    so NULL loses no information.
+  - A reader-option change to keep `''` would add complexity for no gain.
+- **Blank lines are skipped by the reader.** `pr.seasonal`'s blank last line doesn't
+  appear in Bronze. Bronze's row counts equal each file's non-blank data lines.
+
+---
+
+## D30. Silver selects AllData by exact base file name (for Phase 5)
+
+**Status:** Decided 2026-11-13
+
+**Decision:** Silver's data input is the rows of `bronze_pr_data` whose `source_file`
+**base name equals exactly `pr.data.1.AllData`**. Not a `contains` or `endswith` match.
+
+**Evidence:** `source_file` is a full path with a scheme, for example
+`dbfs:/Volumes/workspace/rearc_quest/raw/bls/pr/pr.data.1.AllData`.
+
+**Rationale:**
+- An exact comparison can't accidentally match a future `pr.data.1.AllData.bak` or a
+  similarly named file.
+- Comparing the base name keeps the rule independent of the path prefix and the scheme.
+- If the file is renamed, the AllData-not-empty fail check (D12) catches it, rather than
+  Silver silently becoming empty.
+
+---
+
+## D31. bronze_population keeps each value's exact source text (regex on the raw JSON text)
+
+**Status:** Decided 2026-11-13
+
+**Evidence:** every method was tested in SQL against the raw file in the Volume.
+
+| Method | 2013 value | Matches source? |
+|---|---|---|
+| Source text | `316128839.0` | (reference) |
+| JSON reader, `primitivesAsString` (Phase 4's first version) | `3.16128839E8` | no |
+| `get_json_object` on the raw text | `3.16128839E8` | no |
+| `parse_json` (VARIANT) then `::string` | `316128839` | no: drops `.0` |
+| Regex on the raw text (chosen) | `316128839.0` | **yes**, for all 11 records |
+
+**Options:** exact text by regex (**chosen**); VARIANT text, which is value-exact but
+loses `.0`; or the whole document stored as one row, with parsing moved to Silver.
+
+**Decision:**
+- Read the file as one text value.
+- Take the text inside `"data": [ ... ]`, split it into flat `{...}` records, and cut out
+  each key's value text. For JSON strings, that's the characters inside the quotes.
+- Fail expectations sit on a temporary view, `population_records`. They're expectations
+  rather than Python checks because pipeline functions mustn't collect data.
+  - `document_has_records`: at least one record was found.
+  - `every_record_extracted`: the regex found as many records as a real JSON parser
+    counts (`json_array_length`).
+  - `record_keys_as_expected`: every record has exactly the four expected keys.
+
+**Rationale:**
+- Bronze is a true copy of the source text. Parsing and typing happen once, in Silver.
+- **Accepted risk:** it depends on DataUSA's records staying flat, one level deep. A
+  nested or reshaped record fails the guards loudly rather than passing silently.

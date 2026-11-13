@@ -68,7 +68,13 @@ def main(argv: list[str] | None = None) -> int:
             bls_fetcher=_fetcher(settings, settings.bls_user_agent),
             datausa_fetcher=_fetcher(settings, settings.datausa_user_agent),
             volume=SdkVolume(client),
-            trigger=SdkPipelineTrigger(client, settings.pipeline_name) if refresh else None,
+            trigger=(
+                SdkPipelineTrigger(
+                    client, settings.pipeline_name, development=settings.pipeline_development
+                )
+                if refresh
+                else None
+            ),
             allow_removals=args.allow_removals,
             dry_run=args.dry_run,
             refresh=refresh,

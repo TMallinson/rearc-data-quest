@@ -28,3 +28,5 @@ include = ["rearc_ingest*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The pipeline's root folder, so tests import pure helpers as the pipeline does.
+pythonpath = ["src/pipeline"]

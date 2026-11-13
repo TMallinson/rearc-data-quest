@@ -246,3 +246,79 @@
     against the real Volumes with no problems.
   - The README documents it, and has an "expected warnings" note separating the SDK
     endpoint 403 from a BLS 403.
+
+### Phase 4: Bronze
+- **Claude explained** pipeline updates, materialized-view refresh and where expectations
+  appear. It then built Bronze per C1:
+  - `src/pipeline/transformations/bronze_bls.py`: nine BLS tables from one factory, each
+    with a header check that raises and a warn expectation `no_rescued_data`;
+  - `bronze_population.py`;
+  - `resources/rearc_quest.pipeline.yml`: serverless, triggered, reading only `raw`
+    through the `rearc.raw_root` configuration.
+- **Choices Claude made, flagged for my review:**
+  - Python rather than SQL, for the header trimming and check.
+  - Quote handling and whitespace trimming off.
+  - `Seasonal_code` keeps its capital S.
+  - Population keys renamed to snake_case.
+- **D28 (my decision):** `development: true` on the pipeline failed strict validation as
+  deprecated. I chose a per-update development flag passed by rearc-ingest. Tests were
+  added for the trigger.
+- **Claude's mistakes, all fixed:**
+  - The pipeline's resource key duplicated the schema's (`rearc_quest`), and validation
+    rejected it.
+  - The poll script read a non-existent `UpdateInfo.development`.
+  - A regex group error in one verification query.
+- **Verification:**
+  - pytest: 73 passed. New tests cover the bundle/settings consistency and the trigger.
+  - `bundle validate --strict`: OK. Deploy created 1 pipeline.
+  - `rearc-ingest` with refresh: 0 data writes, update `c401ffe6` started, 1 manifest
+    write, `refresh_pending` now false.
+  - The update completed: about 30s of setup and run after resources were ready.
+  - **Bronze, all from SQL queries:**
+    - every BLS table's row count equals its file's data-line count:
+      `bronze_pr_data` 138,487 = 46,159 Current + 92,328 AllData;
+    - trimmed column names as expected;
+    - no `\r` in any column;
+    - `_rescued_data` 0 everywhere, matching the event-log metrics (`no_rescued_data`
+      0 failed in all nine);
+    - padding kept (`series_id` is always 17 characters, and every `value` is
+      left-padded);
+    - `pr.seasonal`'s blank line was skipped by the reader.
+- **Findings for my decision:**
+  - Empty CSV fields arrive as NULL (128,533 `footnote_codes`).
+  - DataUSA population reads as strings like `3.16128839E8`, not the source text
+    `316128839.0`.
+  - Whether the update ran in development mode is unverified (D28 follow-up).
+
+### Phase 4 review and fixes
+- **Development mode (D28):** I asked Claude to check the event log.
+  - Claude found the update's own `"development": true` in the `create_update` event,
+    separate from the spec's `config.development: false`. **Verified.**
+- **My decisions:**
+  - Accept NULL for empty `footnote_codes` (D29).
+  - Accept Claude's Python, quote-off and snake_case choices, with the reasons recorded
+    and the name mapping in D29.
+  - Silver selects AllData by exact base name (D30).
+  - Make the header check a pure function with failure-path tests.
+- **Population (D31):**
+  - I asked to try `primitivesAsString` first. Claude pointed out that Bronze already used
+    it, and that it was the source of `3.16128839E8`.
+  - Claude tested four read methods in SQL against the raw file. Only regex on the raw text
+    kept `316128839.0`. VARIANT dropped the `.0`; the JSON reader and `get_json_object`
+    gave scientific notation.
+  - **I chose exact text via regex.** Its guards (record count against
+    `json_array_length`, the key set, and at least one record) are fail expectations on a
+    temporary view, because pipeline functions mustn't collect data.
+- **Header check (D13):**
+  - Moved to `src/pipeline/utilities/bronze_contract.py`, importable because the pipeline
+    root folder is on `sys.path` (Databricks docs).
+  - 6 pytest cases: match, missing, extra, reordered, renamed, several missing.
+- **Verification:**
+  - pytest: 79 passed. `bundle validate --strict`: OK.
+  - Update `a0e7c6d7`, started with `pipelines start-update --development` because the
+    code changed and raw didn't, completed.
+  - Before: `3.16128839E8`. After: `316128839.0`.
+  - All 11 records are identical to the raw JSON text in the Volume, compared in Python
+    against the downloaded copy, and all four columns are strings.
+  - The three fail expectations each passed 11 records with 0 failures.
+  - The update's development flag is true. BLS row counts are unchanged.

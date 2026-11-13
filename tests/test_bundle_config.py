@@ -70,3 +70,23 @@ def test_check_catches_a_removed_resource(tmp_path):
     root = _copy_bundle(tmp_path)
     (root / "resources" / "rearc_quest.schema.yml").unlink()
     assert "the rearc_quest schema resource is missing from resources/" in protection_problems(root)
+
+
+def test_ingestion_settings_match_the_bundle():
+    """rearc-ingest and the bundle must agree, or the refresh trigger or Volume paths break."""
+    from rearc_ingest.config import Settings
+
+    defaults = Settings(bls_user_agent="x", datausa_user_agent="x")
+    bundle = yaml.safe_load((REPO / "databricks.yml").read_text())
+    variables = {name: spec["default"] for name, spec in bundle["variables"].items()}
+    assert (defaults.catalog, defaults.schema) == (variables["catalog"], variables["schema"])
+
+    resources = _load_resources(REPO)
+    (pipeline,) = resources["pipelines"].values()
+    assert pipeline["name"] == defaults.pipeline_name
+    volume_names = {v["name"] for v in resources["volumes"].values()}
+    assert {defaults.raw_volume, defaults.archive_volume, defaults.state_volume} == volume_names
+    # The pipeline reads only the raw Volume (D8).
+    raw_root = pipeline["configuration"]["rearc.raw_root"]
+    assert raw_root.endswith("${resources.volumes.raw.name}")
+    assert "archive" not in raw_root and "state" not in raw_root
