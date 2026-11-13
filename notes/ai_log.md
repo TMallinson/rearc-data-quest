@@ -322,3 +322,41 @@
     against the downloaded copy, and all four columns are strings.
   - The three fail expectations each passed 11 records with 0 failures.
   - The update's development flag is true. BLS row counts are unchanged.
+
+### Phase 5: Silver
+- **My notes for PROCESS.md:** the regex-versus-parser trade-off (D31 addendum) and the
+  two update triggers (D32).
+- **Claude explained** multi-row checks: compute rows that carry the answer, then attach
+  the expectation to that dataset. It built:
+  - `silver.py`: five lookups, series with labels, data staged then published, population
+    staged then published;
+  - `checks.py`: `dq_unique_keys`, `dq_current_in_alldata`, `dq_alldata_input`;
+  - pure rules in `utilities/silver_rules.py`, with 22 new tests.
+- **D33:** `DECIMAL(12,3)`, sized from the full profile (at most 5 integer digits and 3
+  decimals).
+  - "Fits" is tested on the text, because `try_cast` rounds silently.
+  - The profile query first reported 87,351 "duplicates". Claude identified this as the
+    NULL-skipping behaviour of `count(DISTINCT a, b, ...)`.
+- **Raised, not decided:** check datasets don't automatically gate Gold. Recorded in
+  D34 for Phase 6.
+- **Verification:** pytest 101 passed; strict validation OK; update `27a6eebd`
+  completed.
+  - **D6:** 46,159 Current rows; 0 missing from AllData; 0 with a different value.
+  - **D3:** 54 Q05-only series in the data, the same 54 as the metadata, with 0
+    classified differently.
+  - **DECIMAL:** the data has at most 5 integer digits and 3 decimals. Silver is
+    `decimal(12,3)`, ranging −60.800 to 25,576.642.
+  - **Accounting:** 92,328 Bronze AllData rows = 92,328 Silver + 0 `row_not_blank` drops
+    + 0 `value_numeric` drops + 0 exact duplicates removed.
+  - **Hand check:** `fs cat | grep` of PRS30006032 2010 in the raw file matches Silver's
+    five rows.
+  - **Labels:** 337 of 337 from `series_title`; 0 needed the fallback.
+  - **Expectations:** all 38 Silver, check and Bronze expectations passed with 0 failures.
+- **Correction after my review:**
+  - Claude's Phase 5 summary said the lookups had "22 rows in total". 22 is the measure
+    lookup alone.
+  - Reconciled: `dq_unique_keys` has 92,714 rows = 92,328 data + 337 series + 38 lookup
+    rows (period 5 + measure 22 + sector 6 + duration 4 + footnote 1) + 11 population
+    years.
+  - The check data was right; the summary was wrong.
+- **My acceptance of Claude's Silver choices,** with my reasons, is recorded in D34.

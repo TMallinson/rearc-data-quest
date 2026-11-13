@@ -964,3 +964,114 @@ loses `.0`; or the whole document stored as one row, with parsing moved to Silve
 - Bronze is a true copy of the source text. Parsing and typing happen once, in Silver.
 - **Accepted risk:** it depends on DataUSA's records staying flat, one level deep. A
   nested or reshaped record fails the guards loudly rather than passing silently.
+
+**D31, for PROCESS.md: the regex-versus-parser trade-off.**
+- **What a parser gives:** a JSON parser is the robust way to read JSON. It handles
+  nesting, escaping and whitespace. But it turns numbers into values and prints them back
+  in its own format: `3.16128839E8`, or `316128839` with the `.0` gone.
+- **What regex gives:** a pattern match on the raw text keeps the source characters
+  exactly. But it's only correct for the shape it assumes: flat records inside a `data`
+  array.
+- **Why regex here:** Bronze's job is to be a faithful copy. The shape assumption is
+  checked on every update against a real parser's record count and an exact key set.
+  If DataUSA changes shape, the update fails loudly instead of Bronze silently drifting
+  from the source.
+- **Where it doesn't fit:** for a large or deeply nested API, or one that changes often,
+  I'd store the raw document (or VARIANT) in Bronze and parse in Silver, accepting
+  value-exact rather than text-exact Bronze.
+
+---
+
+## D32. Two update triggers: data changes go through ingestion, code changes through deploy plus a deliberate update
+
+**Status:** Decided 2026-11-13 (for PROCESS.md)
+
+- **Data change:** `rearc-ingest` lands the changed files, sets `refresh_pending`, and
+  starts a development-mode update at the end of a successful run (D19, D28). Nobody
+  needs to remember to refresh the pipeline after new data.
+- **Code change** (pipeline source or resources): `databricks bundle validate --strict`,
+  then `databricks bundle deploy`, then a deliberate
+  `databricks pipelines start-update <id> --development`.
+  - `rearc-ingest` doesn't start an update here, because raw hasn't changed.
+  - Deploying alone doesn't refresh any table.
+- **Why they're separate:** a code change should be reviewed and run on purpose, not
+  slipped in by the next ingestion. And an unchanged source shouldn't cost compute
+  against the daily quota.
+- **On a client project:** CI would deploy on merge and run the update (or a
+  `--validate-only` update first). The production target would run as a service
+  principal (D26).
+
+---
+
+## D33. Silver value type: DECIMAL(12,3), sized from the full AllData profile
+
+**Status:** Decided 2026-11-13 (from D16's rule; precision and scale chosen by Claude, for my review)
+
+**Evidence** (all 92,328 AllData rows in Bronze, values trimmed):
+- Every value is numeric.
+- Range −60.8 to 25,576.642.
+- At most **5 digits before the point** and **3 after**: 54,431 values have 1 decimal
+  place and 37,897 have 3.
+
+**Decision:** `DECIMAL(12,3)`.
+- **Scale 3:** exactly the most decimal places present. `pr.txt` also says indexes are
+  stored to three places and percent changes to one.
+- **Precision 12:** 9 digits before the point, which is 4 digits of headroom over the
+  data. That's larger than any plausible index, percent change or scaled level. It also
+  matches the documented 12-character `value` field in `pr.txt`.
+
+**Overflow rule (D16):**
+- A numeric value whose text doesn't match `^-?[0-9]{1,9}([.][0-9]{1,3})?$` fails the
+  update.
+- The check is on the text because `try_cast` to DECIMAL rounds extra decimal places
+  silently instead of returning NULL. A NULL check alone would miss that.
+- **Profiling pitfall found:** SQL `count(DISTINCT a, b, ...)` ignores rows with a NULL in
+  any listed column. It reported 87,351 "duplicates" that are really rows with a NULL
+  `footnote_codes`. Dedupe and accounting use NULL-safe methods instead (`dropDuplicates`,
+  and `DISTINCT` over all columns).
+
+---
+
+## D34. Silver implementation and multi-row checks
+
+**Status:** Built in Phase 5, 2026-11-13; accepted after my review (reasons below)
+
+**How multi-row rules are checked:**
+- An expectation evaluates one row of the dataset it's attached to.
+- A rule that spans rows is therefore computed into a **check dataset** whose rows carry
+  the answer, and the expectation is attached there:
+  - `dq_unique_keys`: one row per key, with a `rows` count. Fail if `rows = 1` is
+    violated, with one named expectation per dataset.
+  - `dq_current_in_alldata`: one row per Current row, with `in_alldata` and
+    `value_matches`. Warn (D6). Missing rows aren't counted again as a value mismatch.
+  - `dq_alldata_input`: one aggregate row. Fail if `alldata_rows = 0` (D12).
+- Check datasets are **materialized views**, because a temporary view is computed only
+  when something reads it.
+
+**Silver choices, made by Claude, beyond what D13 specified:**
+- Python, with expectations on temporary views
+  (`silver_pr_data_staged`, `silver_population_staged`), so the conditions can use raw
+  text and flag columns that the published tables don't carry.
+- **Drop and fail conditions are mutually exclusive.** Fail conditions skip rows being
+  dropped, and `value_numeric` skips blank rows. So each dropped row is counted by
+  exactly one expectation.
+- **Two added expectations:**
+  - `label_present` (warn) on `silver_pr_series`;
+  - `lookup_key_unique` (fail), because a repeated lookup key would multiply rows in
+    Silver's joins.
+- Lookups keep code and text only. Class and seasonal lookups aren't promoted to Silver,
+  since nothing uses them.
+- `silver_pr_data` carries the label columns, per CLAUDE.md ("labels joined in").
+
+**Reasons for accepting Claude's choices (my review):**
+- **Non-overlapping drop and fail rules** keep the row accounting exact. Every Bronze
+  AllData row is either in Silver, counted by exactly one drop expectation, or removed as
+  an exact duplicate. Phase 5: 92,328 = 92,328 + 0 + 0 + 0.
+- **Lookup-key uniqueness is fail, not warn.** A duplicate code would duplicate rows in
+  every join that uses that lookup, and that would inflate the Q2 sums.
+
+**Open, for Phase 6: checks must gate Gold** (closed by D36).
+- A failing check fails the update, but it doesn't stop Gold from being refreshed in the
+  same update unless Gold depends on the check.
+- Gold's design must make the check datasets upstream of the Gold tables, or otherwise
+  guarantee that a failing check leaves Gold unchanged.
