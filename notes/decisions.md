@@ -243,3 +243,421 @@ by read-modify-write. Two concurrent runs could each read the same manifest and
 overwrite each other's updates, which loses changes or causes needless re-downloads.
 Ingestion is run manually from one machine, so this is accepted rather than solved
 with locking.
+
+---
+
+## D9. Repository and bundle layout
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- **One repo with the bundle at the root.**
+  - `resources/` holds the schema, the three Volumes, and the pipeline.
+  - `src/rearc_ingest/` is the local ingestion package. Its command-line entry point is
+    `rearc-ingest`.
+  - `src/pipeline/transformations/` holds the bronze, silver, gold and checks code.
+  - `tests/` holds pytest tests that need no network and no Spark.
+- **Pure logic is kept separate from side effects.** `listing.py` and `plan.py` are pure
+  functions. The network (`http.py`), the Volume (`volume.py`) and the pipeline trigger
+  (`refresh.py`) sit behind small interfaces, each with a fake for tests.
+- **Both versions of each Gold answer run in the pipeline.** The non-primary
+  implementation is a **private** dataset: computed but not published to Unity Catalog.
+  A SQL-vs-PySpark parity check runs on every update.
+- The git branch is renamed from `master` to `main`.
+
+**Rationale:**
+- Pure planning logic makes D7, D10 and D11 testable exhaustively without Databricks.
+- The fakes let us prove "a second run writes nothing" locally before proving it against
+  the real Volume.
+- Running both implementations in the pipeline makes parity a checked property, not a
+  claim.
+
+---
+
+## D10. Changed files: archive a content-addressed copy, then overwrite raw, then update the manifest (option B2)
+
+**Status:** Decided 2026-11-13
+
+**Decision:** Each new content version is written to two places:
+- `archive/<source>/<name>/<sha256>`: immutable and named by hash.
+- `raw/<source>/<name>`: the current copy, overwritten in place.
+
+Write order per file:
+1. the archive copy;
+2. the raw copy;
+3. the manifest entry.
+
+**Rationale:**
+- `raw/` always mirrors what the source currently publishes, which is what C1 (D12) reads.
+- The archive keeps every version without reading anything back from the Volume. The
+  Files API has no move or rename, so archiving the old copy at overwrite time would
+  mean downloading it first.
+- Naming archive copies by hash makes rewriting one harmless.
+- The order makes a crash safe. If a run dies after the raw write but before the
+  manifest write, the next run sees a hash that differs from the stale manifest. It
+  repeats all three steps with the same bytes, which is a safe repeat.
+
+**Consequence:** a third Volume, `archive`, separate from `raw` for the same structural
+reason as D8.
+
+---
+
+## D11. Removed files: mirror the removal, with a guard (option R1)
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- A file missing from a successfully parsed listing is deleted from `raw/` and marked
+  `removed` in the manifest. Its archive copies stay.
+- **Guard:** a run that would remove **more than 2 files**, or **any `pr.data.*` file**,
+  refuses to change anything unless `--allow-removals` is passed.
+- The threshold is a setting (default 2), and so is the protected pattern.
+- An empty or unparseable listing always aborts the run, before any removal logic runs.
+
+**Rationale:**
+- Mirroring keeps `raw/` equal to what the source currently publishes. That avoids the
+  double-counting a BLS rename would cause if old files were kept.
+- The archive makes every removal reversible.
+- The guard stops a bad listing, or a change at BLS, from silently emptying the data
+  files that all three answers depend on.
+
+---
+
+## D12. Bronze reads the current files as materialized views (option C1)
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- **Bronze tables are materialized views** that do batch `read_files` over `raw/` on each
+  refresh.
+- **One table per file type:**
+  - `bronze_pr_data` holds Current and AllData together. The glob `pr.data.*` matches
+    them, and a source-file column tells them apart.
+  - `bronze_pr_series` holds the series file.
+  - Each of the seven lookup files gets its own table.
+  - `bronze_population` holds the DataUSA JSON.
+  - `pr.txt` and `pr.contacts` are landed but not turned into tables.
+- **Header names are trimmed. Values are left exactly as they arrived.**
+- **Metadata columns:** `_metadata.file_path` (source file) and
+  `_metadata.file_modification_time` (when ingestion wrote the file). Refresh time is
+  not used, because a materialized view recomputes on every refresh.
+- **A fail expectation checks that Silver's AllData input is not empty.** Silver selects
+  that file by name, so a rename at BLS would otherwise produce an empty, plausible-looking
+  Silver.
+
+**Rationale:**
+- BLS publishes complete snapshots that are rewritten in place, with revisions.
+- With Auto Loader's default settings, each file path is processed exactly once. For a
+  file that is overwritten, it "cannot guarantee which file version will be processed"
+  (Auto Loader FAQ). With `allowOverwrites` it reprocesses the whole file. Streaming
+  tables only append, so removals are never reflected.
+- C1 sees exactly the current files, with correct handling of changes and removals.
+- Re-reading about 6 MB per refresh is negligible.
+- The quest's "don't reprocess" requirement is met at ingestion (D7).
+
+**Stretch goal:** C3, which is Auto Loader over the immutable `archive/` Volume. It gives
+incremental Bronze plus full version history, with "latest version per file" logic in
+Silver. D10 already lands the immutable files C3 needs.
+
+---
+
+## D13. Expectations by layer
+
+**Status:** Decided 2026-11-13
+
+**Decision:** adopt the expectation table proposed this session, with two changes.
+
+- **Guiding principle:**
+  - **warn** when a problem doesn't change the answers;
+  - **drop** when it's a known artifact, or when D4 makes dropping safe;
+  - **fail** when continuing would publish a wrong answer with confidence.
+- **Bronze:**
+  - Trimmed header names must equal the expected list. This is an explicit code check,
+    because expectations only see rows. **Fail.**
+  - `_rescued_data IS NULL`. **Warn.**
+- **Silver data:**
+  - Row is not blank. **Drop**: known artifact.
+  - `series_id` not null and matches the pattern. **Fail.**
+  - `year` is an integer in a plausible range. **Fail.**
+  - `period` is found in `pr.period`. **Fail.**
+  - `value` is numeric. **Drop**: safe because of D4. See D16 for values that are
+    numeric but don't fit.
+  - `series_id` is found in `pr.series`. **Warn**: Q2 needs every series.
+  - No key has two different values. **Fail**: exact duplicates are just removed.
+  - Footnote codes are found in `pr.footnote`. **Warn.**
+- **Silver series:** `series_title` present. **Warn** (change 1, below).
+- **Silver population:**
+  - Year is unique.
+  - Population is not null, positive and a whole number.
+  - Nation is United States.
+  - All **fail.**
+- **Check:** every Current row exists in AllData with the same value. **Warn** (D6).
+- **Silver:** the AllData input is not empty. **Fail** (D12).
+- **Gold Q1:** exactly six years from 2013 to 2018. **Fail.**
+- **Gold Q2:**
+  - One row per series, and `basis` is one of the two allowed values. **Fail.**
+  - Every series in Silver appears in the result. **Warn.**
+- **Gold Q3:** at least one row. **Fail.**
+- **Gold, all three:** the SQL and PySpark versions are identical. **Fail.**
+
+**Change 1, the series title (D5):** the check **warns**. The label column is
+`coalesce(series_title, a label built from the measure, sector and duration names)`, so
+every row always has a readable label.
+
+**Change 2, Q3 population nulls:** the warning is **removed**.
+- Those nulls are what the left join is designed to produce. A warning that fires on
+  every run teaches people to ignore warnings.
+- Instead, document the coverage gaps: DataUSA covers 2013–2019 and 2021–2024, with no
+  2020 in the ACS 1-year estimates. BLS years outside that range have null population.
+
+---
+
+## D14. Whitespace: kept in Bronze, every string trimmed in Silver
+
+**Status:** Decided 2026-11-13
+
+**Evidence:**
+- `series_id` is right-padded to 17 characters.
+- `value` is left-padded.
+- Header names are padded.
+
+**Decision:**
+- Bronze values are left exactly as they arrived. Only the header *names* are trimmed
+  (D12).
+- Silver trims every string column.
+
+**Rationale:**
+- Bronze stays faithful evidence of what was ingested.
+- Trimming once, in Silver, means every consumer gets clean keys. An untrimmed
+  `series_id` would make the Q3 filter match nothing.
+
+---
+
+## D15. Q3 join: left join on integer year
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- Join BLS data to population with a **left** join on `year`, as `INT = INT`.
+- The BLS year is cast to an integer in Silver. DataUSA's `Year` is already an integer.
+
+**Rationale:**
+- The question asks for every year's value, with population "where available".
+- An inner join would silently drop 1987–2012, 2020 and 2025–2026.
+- Joining on matching types avoids implicit string-to-integer casts.
+
+---
+
+## D16. Values are DECIMAL, sized from the real data; a value that doesn't fit fails
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- Store `value` as `DECIMAL(p, s)`. Choose `p` and `s` from the real data: the largest
+  number of integer digits and the most decimal places seen, plus headroom.
+- A value that is numeric but doesn't fit must **fail loudly**. It must never become a
+  null that the value-is-numeric drop rule (D13) silently removes.
+
+**Rationale:**
+- Q2 sums decimals. With DOUBLE they pick up rounding noise, which also makes ties
+  (D17) unreliable.
+- DECIMAL gives exact sums and real ties.
+- Separating "not numeric" (drop) from "numeric but doesn't fit" (fail) keeps the drop
+  rule from hiding a sizing bug.
+
+---
+
+## D17. Q2 ties: one row per series, earliest year wins, other tied years listed
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- Q2 returns exactly one row per series.
+- If several years share the largest sum, the **earliest** year is reported.
+- An `other_tied_years` column lists any other tied years (sorted; empty if none).
+- The SQL and PySpark implementations use **identical** tie rules and ordering.
+
+**Rationale:**
+- One row per series keeps the Gold table key simple.
+- The extra column means no tie is hidden.
+- Identical, deterministic rules keep the parity check (D9) from failing at random.
+
+---
+
+## D18. DataUSA hashing: test first; hash the raw bytes if they're stable
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- Fetch the API twice and compare the bytes.
+- If they're identical, hash the raw bytes.
+- Normalise only if the test shows it's needed, and only as much as needed.
+- In every case, write the bytes exactly as received.
+
+**Rationale:** normalising adds code and its own risks. It only earns its place if the
+API's output actually varies between calls.
+
+**Result:** recorded below, under "D18 test result".
+
+---
+
+## D19. Run order is enforced in code: start a pipeline update whenever raw has changed since the last successfully started update
+
+**Status:** Decided 2026-11-13; revised 2026-11-13 (see "Revision" below)
+
+**Decision (revised):**
+- The tool starts a pipeline update **whenever raw has changed since the last
+  successfully started update**.
+- This is tracked by a `refresh_pending` flag stored in the manifest:
+  - **Set:** in the same manifest save as any raw write or raw delete, so it costs no
+    extra write.
+  - **Cleared:** once an update has **successfully started**.
+  - **Checked:** an update is started only at the end of a fully successful run, so the
+    pipeline never sees a half-finished ingestion.
+- **`--no-refresh` sets the flag and leaves it set.** The next run with refresh enabled
+  starts the update, even if that run changes nothing.
+- If starting the update fails, the flag stays set and the next run tries again.
+
+**Rationale:**
+- Ingestion and the pipeline never overlap, so a refresh can't see half-updated files.
+  A half-updated pair would make the D6 warning fire for no real reason.
+- In the steady state (nothing pending and nothing changed), a run writes nothing and
+  uses no compute against the Free Edition daily quota.
+
+**Revision:**
+- **Original wording:** "start a pipeline update only if *this run* changed raw".
+- **Why it was wrong:** if a run wrote to raw and then failed (for example at DataUSA),
+  no update started. The next run found nothing new, so it didn't start one either, and
+  the pipeline stayed stale indefinitely.
+- Claude raised the gap after Phase 1. I chose the pending flag.
+- The original wording was wrong, not merely bent. The rule was always about raw having
+  changed since the pipeline last ran.
+
+**Accepted limitation (for PROCESS.md trade-offs):**
+- The flag is cleared when the update **starts**, not when it **succeeds**.
+- Whether the update succeeds is the pipeline's concern: its own run history, alerting
+  and retries.
+- Ingestion doesn't wait for the pipeline or track its result. A failed update must be
+  noticed and re-run from the pipeline side.
+
+### D18 test result (2026-11-13)
+- **Test:** two fetches of the DataUSA URL, 5 seconds apart, with a generic User-Agent.
+- **Result:** both were HTTP 200, 1,401 bytes, SHA-256
+  `31e7b5d3df039c91f6e64f7f7befd98a9a1b6cb5277b600a425ea83eb1629a0f`. **The bytes were
+  identical.**
+- The response has no `ETag`, `Last-Modified` or `Cache-Control` header, so a conditional
+  request isn't possible. Fetching and hashing is the only way to detect a change.
+- **Outcome:** hash the raw bytes. No normalisation.
+
+---
+
+## D20. DataUSA requests identify the tool with a project URL, not a personal email
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- DataUSA requests send `User-Agent: rearc-ingest/<version> (+<repository URL>)`.
+- The version and URL come from the package metadata in `pyproject.toml`
+  (`[project.urls] Repository`), so they're configured once.
+- A run refuses to start if the URL isn't configured.
+
+**Rationale:**
+- It identifies the tool and gives a contact route.
+- It doesn't send my personal email to a service that hasn't asked for it. BLS does
+  ask, so BLS requests keep `BLS_USER_AGENT`.
+
+---
+
+## D21. Size mismatch: retry a limited number of times, then fail; never write a mismatched file
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- A BLS download whose byte count differs from the listing size, shorter **or longer**,
+  is retried a limited number of times. This uses the same attempt limit and backoff as
+  other transient errors (`max_attempts`, default 4).
+- If it still doesn't match, the run fails with a message saying the file may have
+  changed on the server during the run, and to re-run it.
+- A file whose size doesn't match the listing is **never written**.
+
+**Rationale:**
+- The listing size is the uncompressed byte count, and it matched exactly for every
+  file inspected.
+- A short body suggests a broken transfer. A long one suggests BLS republished the file
+  between the listing and the download.
+- Either way, the listing metadata and the content no longer describe the same version.
+  Writing it would record listing metadata in the manifest that doesn't match the
+  stored file.
+- Re-running fetches a fresh listing and a consistent pair.
+
+---
+
+## D22. Parent folders in the Volumes: confirm in Phase 3, create them explicitly if needed
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- In Phase 3, confirm whether a Files API upload to a new path creates the missing
+  parent folders.
+- If it doesn't, create them explicitly in `SdkVolume` before writing.
+
+---
+
+## D23. The manifest is rewritten after every file (accepted trade-off)
+
+**Status:** Decided 2026-11-13
+
+**Decision:** keep saving the whole manifest after each file's write or removal.
+
+**Trade-off:** crash granularity versus number of writes.
+- **Benefit:** a crash leaves at most one file's write unrecorded, and the next run
+  redoes it with the same bytes (D10).
+- **Cost:** one small manifest rewrite per changed file, so 13 on a full first run plus
+  one to clear the flag (D19). With about a dozen files that's negligible.
+
+**For PROCESS.md, at scale:** batch the manifest writes (for example every N files or
+every T seconds), accepting a larger redo window. Or keep the manifest in a Delta table,
+where per-file updates are transactional rows rather than whole-file rewrites. A Delta
+table also fixes D8's one-run-at-a-time limitation.
+
+---
+
+## D24. The pipeline trigger is at-least-once (accepted)
+
+**Status:** Decided 2026-11-13
+
+**Decision:** keep the order "start update, then clear `refresh_pending`" (D19).
+
+**Consequence:**
+- A crash after the update starts, but before the flag is cleared, leaves the flag set.
+- The next run then starts a second update.
+- That duplicate is harmless: refreshing a pipeline whose inputs haven't changed
+  produces the same tables. The only cost is some compute.
+- The reverse order (clear, then start) would be at-most-once. A crash in between could
+  then lose an update entirely, which is the stale-pipeline failure D19 exists to prevent.
+
+---
+
+## D25. Recovery from a corrupted or lost manifest: delete it and re-run
+
+**Status:** Decided 2026-11-13
+
+**Decision:**
+- A manifest that can't be read stops the run with a `ManifestError` (exit code 1). The
+  run never guesses.
+- The documented recovery is to delete `state/manifest.json` and run again.
+
+**Why it's safe:**
+- With no manifest, every listed file is treated as new and re-landed.
+- Archive paths are named by content hash, so archive writes rewrite identical files.
+- Raw copies are overwritten with the same bytes, if the source hasn't changed.
+- Each write sets `refresh_pending`, so the pipeline is refreshed afterwards.
+- The cost is one full download from BLS (about 6 MB, paced at one request per second).
+
+**Verified by:** `test_deleted_manifest_relands_identical_bytes_and_sets_pending`. After a
+first run, the manifest is deleted and the run repeated with `--no-refresh`. Every raw
+and archive file is byte-identical, and `refresh_pending` is set.
+
+**Limitation:** files removed before the manifest was lost are no longer known to have
+been removed. That doesn't matter: they're absent from both the listing and raw, so
+nothing reads them.

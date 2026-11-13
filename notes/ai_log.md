@@ -39,6 +39,28 @@
 - **Attribution:** I decided D2–D7 after discussing the options with Claude in a separate
   chat. In this session, Claude raised the options and evidence from the source files
   and drafted the rationale text in `decisions.md`.
+- **D9–D19 (design for ingestion, Bronze, expectations and types):** Claude proposed the
+  options with trade-offs and recommendations: layout (a), write and removal handling
+  (b), Bronze read mode (c), and the expectation table (d). I decided D9–D19 after
+  reviewing that proposal with Claude in a separate chat. My changes to Claude's
+  recommendations:
+  - the write order, with the archive named by hash;
+  - the removal guard's specific threshold and the `pr.data.*` rule;
+  - the AllData-not-empty fail check;
+  - the title-check action and the coalesce label;
+  - removing the Q3 population-null warning;
+  - DECIMAL overflow must fail, not drop;
+  - the tie rule;
+  - test DataUSA before normalising;
+  - refresh enforced in code.
+- **Facts Claude checked rather than assumed while proposing:**
+  - **Auto Loader overwrite behaviour** comes from the Databricks FAQ: exactly-once per
+    path by default, and no guarantee which version of an overwritten file is processed.
+  - **The SDK Files API has no move or rename.** Claude inspected the installed
+    databricks-sdk 0.166.0.
+  - **Bundle dev-mode naming:** the docs don't confirm whether dev mode prefixes Unity
+    Catalog schemas and volumes. It is left to be checked with `bundle validate` in
+    Phase 2.
 - **Corrections to Claude's drafts:**
   - D2: Claude added that the sample value is worth showing because Spark's `stddev()`
     uses the sample formula by default. I confirmed that's correct.
@@ -73,3 +95,77 @@
 - Claude renamed `claude.md` to `CLAUDE.md` so the file loads on case-sensitive systems,
   and added `.DS_Store` and `.databricks/` to `.gitignore`. `.databricks/` is the CLI
   and bundle's local state directory; Databricks' own bundle template ignores it.
+
+### Phase 1: ingestion package and tests against fakes (no Databricks)
+
+**What Claude drafted**
+- The `rearc_ingest` package under `src/`:
+  - `config`: settings and the User-Agent check;
+  - `http`: retry and pacing policy;
+  - `listing`: strict listing parser;
+  - `manifest`, `plan` (D7 comparison and D11 guard) and `store` (D10 write order);
+  - `volume`: SDK Files API wrapper;
+  - `refresh`: D19 trigger;
+  - `sources/bls`, `sources/datausa`, `run` and `cli`.
+- `pyproject.toml` with the `rearc-ingest` entry point.
+- 56 pytest tests, using fakes for the Volume, HTTP and the pipeline trigger.
+
+**Small deviations from the approved plan**
+- The fakes live in `tests/fakes.py`, not inside the package modules, so test code
+  doesn't ship.
+- D10/D11 write logic is in its own `store.py`; summary counters are in `summary.py`.
+
+**Verification**
+- D18 test: two DataUSA fetches 5 seconds apart returned identical bytes (SHA-256
+  `31e7b5d3…`), so the raw bytes are hashed. The result is recorded under D18.
+- `pytest`: 56 passed. This includes the second-run proof: zero writes or deletes, zero
+  BLS file downloads, only 2 requests (listing and DataUSA), and no refresh.
+- **Mutation check:** Claude injected two deliberate bugs from a scratch pytest plugin,
+  without editing the source.
+  - A hash that never matches: 6 tests failed, including the second-run proof.
+  - 403 treated as retryable: both 403 tests failed.
+- `rearc-ingest --help` works. No Databricks calls were made in this phase.
+
+### Phase 1 review: four follow-up decisions (D19 revised, D20–D22)
+- **Attribution:** I decided these after reviewing them with Claude in a separate chat.
+  Claude had raised them as open choices at the end of Phase 1.
+- **D19 revised:**
+  - Start an update whenever raw has changed since the last successfully started update,
+    tracked by a `refresh_pending` flag in the manifest.
+  - The original wording ("only if this run changed raw") was wrong: a failed run after a
+    raw write left the pipeline stale.
+  - `--no-refresh` leaves the flag set. The flag is cleared once an update has started,
+    not when it succeeds; that is a PROCESS.md trade-off.
+- **D20:** the DataUSA User-Agent is `rearc-ingest/<version> (+<repo URL>)`, taken from
+  `pyproject.toml` metadata, not my email. Claude's draft had used a bare tool name.
+- **D21:**
+  - Any size mismatch, shorter or longer, is retried up to `max_attempts`, then fails
+    with a "may have changed during the run; re-run" message.
+  - A mismatched file is never written.
+  - Claude's draft only described short bodies as truncation.
+- **D22:** confirm in Phase 3 whether the Files API creates parent folders; create them
+  explicitly if it doesn't.
+- **Verification:**
+  - `pytest` passes 64 tests. New ones cover:
+    - pending set after a failure, with the next no-change run starting the update;
+    - `--no-refresh` keeping the flag set;
+    - a failed trigger keeping the flag set;
+    - shorter and longer size mismatches;
+    - a persistent mismatch never being written;
+    - a separate User-Agent per source.
+  - Mutants: a never-matching hash failed 8 tests; a retryable 403 failed 2; a
+    `refresh_pending` flag that could never be stored failed 9.
+
+### Phase 1 sign-off
+- **My decisions** (after review with Claude in a separate chat):
+  - The repo URL is set in `[project.urls]`.
+  - Keep the per-file manifest rewrite as an accepted trade-off (D23).
+  - The trigger is at-least-once, and duplicate updates are harmless (D24).
+  - Recovery from a corrupted manifest is to delete it and re-run (D25), with a test
+    proving the Volume ends up byte-identical.
+  - Document the exit codes in the README.
+- **Claude added**, beyond what I asked: the ManifestError message now names the recovery
+  step (delete the manifest path and re-run).
+- **Verification:**
+  - pytest: 65 passed, including the new D25 test.
+  - `tool_user_agent()` resolves to `rearc-ingest/0.1.0 (+https://github.com/tmallinson/rearc-data-quest)`.

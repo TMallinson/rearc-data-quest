@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rearc-ingest"
+version = "0.1.0"
+description = "Lands the BLS pr time series and DataUSA population into a Databricks Volume."
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.32",
+    "databricks-sdk>=0.166",
+    "python-dotenv>=1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/tmallinson/rearc-data-quest"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+rearc-ingest = "rearc_ingest.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["rearc_ingest*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
