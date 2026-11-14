@@ -6,27 +6,27 @@ This covers how I built the project, what I'd change for a real client, how I us
 
 ### The overall shape
 
-The project splits at the Volume. Ingestion runs on my laptop, and everything from the raw files onward runs in Databricks as a single serverless, triggered Spark Declarative Pipeline.
+The project splits at the Volume. Ingestion runs on my laptop, and everything from the raw files onward runs in Databricks as a single serverless triggered Spark Declarative Pipeline.
 
-That split wasn't my first choice. I wanted ingestion inside Databricks, but Free Edition's serverless compute couldn't resolve `download.bls.gov` or `honolulu-api.datausa.io`. It couldn't resolve `example.com` either, while `pypi.org` worked fine, so this was the platform's outbound allowlist and nothing to do with BLS. Verifying my account with LinkedIn, which is supposed to unlock outbound access, made no difference, even after restarting compute. So ingestion runs locally and writes into Unity Catalog through the Databricks SDK Files API (D1).
+That split wasn't my first choice. I wanted ingestion inside Databricks, but Free Edition's serverless compute couldn't resolve `download.bls.gov` or `honolulu-api.datausa.io`. It couldn't resolve `example.com` either, while `pypi.org` worked fine, so this was the platform's outbound allowlist and nothing to do with BLS. I tried verifying my account with LinkedIn, which is supposed to unlock outbound access, but it made no difference. To circumvent it, ingestion runs locally and writes into Unity Catalog through the Databricks SDK Files API (D1).
 
-I wrote it so that it doesn't care where it runs. It keeps no state on my machine, uses no local paths, and its only machine-specific input is an environment variable. On a workspace that allowed those two domains, the same package could run as a scheduled serverless job.
+I wrote it so that it doesn't care where it runs. It keeps no state on my machine, uses no local paths, and its only machine-specific input is an environment variable. On a different workspace that allowed those two domains, the same package could run as a scheduled serverless job.
 
-The data lives in three Volumes, each with one job (D8, D10). `raw` holds exactly what the sources publish right now, and it's the only Volume the pipeline reads. `archive` holds every version of every file I've ever written, named by its SHA-256. `state` holds the ingestion manifest. Using separate Volumes rather than separate folders means a careless path pattern can't pick up state or history by accident, and each Volume can get its own permissions.
+The data lives in three Volumes, each with one job (D8, D10). `raw` holds exactly what the sources publish right now, and it's the only Volume the pipeline reads. `archive` holds every version of every file I've ever written named by its SHA-256. `state` holds the ingestion manifest. Using separate Volumes rather than separate folders means a careless path pattern can't pick up state or history by accident. Each Volume can get its own permissions.
 
 ### Re-running ingestion safely
 
 The brief says a re-run has to cope with the source adding, changing or removing files, without reprocessing anything already ingested. I split that into two questions (D7).
 
-The first is whether to download a file at all. Ingestion reads the BLS directory listing, so no filenames are hardcoded, and compares each file's timestamp and size, as raw strings, with what the manifest recorded last time. Only new or changed files get downloaded. The listing parser is deliberately strict: if it can't parse a row, the run stops. Otherwise a change in the page format could make every file look deleted.
+The first is whether to download a file at all. Ingestion reads the BLS directory listing, so no filenames are hardcoded, and compares each file's timestamp and size as raw strings, with what the manifest recorded last time. Only new or changed files get downloaded. The listing parser is deliberately strict. If it can't parse a row, the run stops. Otherwise a change in the page format could make every file look deleted.
 
-The second is whether to write what was downloaded. Each file is hashed and only written if its content actually changed. If only the listing metadata changed, just the manifest is updated, so a file BLS touched without changing doesn't get downloaded on every run forever. I'd hoped to use ETags for this, but the BLS server derives them from modification time, so they say nothing about content.
+The second is whether to write what was downloaded. Each file is hashed and only written if its content actually changed. If only the listing metadata changed, just the manifest is updated, so a file BLS touched without changing doesn't get downloaded on every run forever. I originally hoped to use ETags for this, but the BLS server derives them from modification time, so they say nothing about content.
 
 Writes happen in a fixed order: the archive copy, then `raw`, then the manifest entry (D10). If a run dies partway, the manifest still has the old hash, so the next run repeats the same writes with the same bytes. Archive copies are named by their hash, so rewriting one is harmless. Even losing the manifest entirely is recoverable: re-running re-lands everything byte for byte, which I tested (D25).
 
 Removals are mirrored (D11). If a file disappears from the listing, it's deleted from `raw` and the archive keeps it. There's a guard, though. A run that would remove more than two files, or any `pr.data.*` file, refuses unless you explicitly allow it, so a bad listing can't wipe out the data the answers depend on.
 
-BLS's access policy is built into the HTTP layer. Every request carries a User-Agent with my contact details, requests are spaced about a second apart, and a 403 stops the run with no retry, since retrying a block is exactly what BLS asks bots not to do. Only timeouts, connection errors and 5xx responses are retried, with backoff. If a downloaded file's size doesn't match the listing, it's retried a few times and then the run fails without writing it (D21).
+BLS's access policy is built into the HTTP layer. Every request carries a User-Agent with my contact details, requests are spaced about a second apart, and a 403 stops the run with no retry since retrying a block is exactly what BLS asks bots not to do. Only timeouts, connection errors and 5xx responses are retried, with backoff. If a downloaded file's size doesn't match the listing, it's retried a few times and then the run fails without writing it (D21).
 
 To prove the no-reprocessing claim, I ran ingestion twice against unchanged sources. The second run made two requests, the listing and DataUSA, and wrote nothing. I checked that independently of the tool's own counters: every file's modification time and the manifest's hash were unchanged ([evidence](docs/evidence/phase3_second_run_unchanged.txt)). I also downloaded `pr.data.0.Current` with curl and compared it byte for byte with the Volume copy, Windows line endings included.
 
@@ -34,9 +34,9 @@ After a run, ingestion starts a pipeline update if `raw` has changed since the l
 
 ### Bronze
 
-Auto Loader was the obvious choice, and I didn't use it. BLS publishes complete files and rewrites them in place when it revises the data. Auto Loader is built for files that arrive once and never change: by default it processes each path only once, and for an overwritten file it doesn't promise which version it reads. So Bronze is a set of materialized views that re-read whatever is currently in `raw` on each refresh (D12). That's about 6 MB, which costs nothing, and changes and removals flow through with no extra logic. The no-reprocessing requirement is met at ingestion instead, which is where it matters for BLS's servers.
+Auto Loader was the obvious choice, and I didn't use it. BLS publishes complete files and rewrites them in place when it revises the data. Auto Loader is built for files that arrive once and never change. By default it processes each path only once, and for an overwritten file it doesn't promise which version it reads. So Bronze is a set of materialized views that re-read whatever is currently in `raw` on each refresh (D12). That's about 6 MB, which costs nothing, and changes and removals flow through with no extra logic. The no-reprocessing requirement is met at ingestion instead, which is where it matters for BLS's servers.
 
-Bronze keeps the files as they are: every column a string, padding kept, quote handling off and nothing trimmed (D29). I add two columns, `source_file` and `ingested_at`. `ingested_at` is when ingestion wrote the file, not when the pipeline happened to run.
+Bronze keeps the files as they are: every column a string, padding kept, quote handling off and nothing trimmed (D29). I add two metadata columns, `source_file` and `ingested_at`. `ingested_at` is when ingestion wrote the file, not when the pipeline happened to run.
 
 Expectations only see rows, so they can't check a file's header. Instead, a small pure Python function trims each file's header names and compares them with the expected list, and the update fails on any mismatch. It has unit tests for missing, extra, reordered and renamed columns (D13).
 
@@ -48,7 +48,7 @@ Silver reads only `pr.data.1.AllData`, matched on its exact file name (D6, D30).
 
 Every string gets trimmed (D14). Years become integers, so the Q3 join is integer to integer (D15). Values become `DECIMAL(12,3)`, sized from the largest value in the data plus headroom (D16, D33). A decimal type keeps the Q2 sums exact, so a tie is a real tie and not floating-point noise.
 
-One thing caught me out here: casting to DECIMAL silently rounds extra decimal places. So the fit check runs on the source text, and a value that's numeric but too long fails the update instead of being quietly rounded or dropped. Series labels live in the series table and get joined in Gold (D35).
+One thing that I caught here: casting to DECIMAL silently rounds extra decimal places. So the fit check runs on the source text, and a value that's numeric but too long fails the update instead of being quietly rounded or dropped. Series labels live in the series table and get joined in Gold (D35).
 
 The expectations follow one rule (D13):
 
@@ -58,7 +58,7 @@ The expectations follow one rule (D13):
 
 Drop and fail conditions never overlap, so every row is accounted for: 92,328 AllData rows in Bronze, 92,328 in Silver, nothing dropped and no duplicates removed (D34).
 
-Some rules span rows, like key uniqueness, the Current check and "AllData isn't empty", and an expectation can't express those directly. Each one is computed into a small check table, and the expectation is attached there. These have to be materialized views, because a temporary view only runs when something reads it, and nothing reads a check.
+Some rules span rows, like key uniqueness, the Current check and "AllData isn't empty", and an expectation can't express those directly. Each one is computed into a small check table, and the expectation is attached there. These have to be materialized views because a temporary view only runs when something reads it, and nothing reads a check.
 
 ### Gold
 
@@ -66,7 +66,7 @@ Each answer's primary version is SQL (D37). Gold is for people who work in SQL, 
 
 The answers themselves:
 
-- **Q1** reports the population standard deviation, with the sample figure alongside (D2). The six years are the whole set being described, not a sample of something bigger. I show both because Spark's `stddev()` quietly uses the sample formula, and a reader might expect that number.
+- **Q1** reports the population standard deviation, with the sample figure alongside (D2). The six years are the whole set being described, not a sample of something bigger. I show both because Spark's `stddev()` quietly uses the sample formula.
 - **Q2** sums Q01–Q04 for quarterly series and never Q05, which BLS defines as the annual average. The 54 series that only publish annual figures are ranked by their Q05 value, and the result says which basis each row uses. Only complete years are ranked (D3, D4). Completeness is worked out from the data rather than a hardcoded cutoff, so the partial 2026 drops out today and comes back when BLS publishes Q4. Ties go to the earliest year, and the other tied years are listed (D17).
 - **Q3** is a left join on integer year, so years without a population figure stay in with a NULL (D15).
 
@@ -117,13 +117,13 @@ On a team, both belong in CI, with tests and strict validation on every merge, a
 
 I used Claude throughout, in two ways.
 
-Claude Code, running in VS Code, did most of the hands-on work. It explored the sources, proposed designs with trade-offs, wrote the code and tests, and ran the verification.
+Claude Code, running in VS Code, did most of the hands-on work and saved a ton of time building out the framework and writing code. It explored the sources, proposed designs with trade-offs, wrote the code and tests, and ran the verification.
 
-Alongside that, I kept a separate Claude conversation as a reviewer. I'd paste Claude Code's reports and proposals into it, talk through the options, and then make the call. Every design decision was mine, but many of them came out of those review conversations, and the decision log says so. The working rules are in [CLAUDE.md](CLAUDE.md): Claude drafts, explains and verifies; I decide.
+Alongside that, I kept a separate Claude conversation as a reviewer and to help explain different phases. Every design decision was mine, but many of them came out of review conversations, and the decision log says so. The working rules are in [CLAUDE.md](CLAUDE.md): Claude drafts, explains and verifies; I decide.
 
-I hadn't used Spark Declarative Pipelines or Asset Bundles before, so I also used Claude as a teacher. Before it wrote code using a new concept, I asked for a short explanation of it, for example materialized views versus streaming tables, how expectations work, and what a pipeline update actually does.
+I hadn't used Spark Declarative Pipelines since they were called Delta Live Tables, or Asset Bundles before, so I also used Claude as a teacher. Before it wrote code using a new concept, I asked for a short explanation of it, for example materialized views versus streaming tables, how expectations work, and what a pipeline update actually does.
 
-Some steps only I could do: the OAuth login for the CLI profile, confirming the DataUSA URL, and running `bundle destroy`, since the CLI explicitly tells AI agents not to skip its confirmation prompt.
+Some steps only I could do, like the OAuth login for the CLI profile, confirming the DataUSA URL, and running `bundle destroy`, since the CLI explicitly tells AI agents not to skip its confirmation prompt.
 
 **How I checked its work.** My main rule was that nothing counted as done until there was evidence I could see, ideally from a source independent of the code making the claim. The no-op ingestion run was proven with file modification times and a manifest hash, not the tool's own counters. Silver and the Q2 answers were hand-checked against the raw files. I also had Claude deliberately inject bugs to make sure the tests would catch them:
 
@@ -144,7 +144,7 @@ Some steps only I could do: the OAuth login for the CLI profile, confirming the 
 **Corrections went both ways.** I corrected Claude's drafts in several places:
 
 - The reasoning behind D6. It warns because Silver and Gold never read Current, not because of BLS publishing times.
-- The wording of D19, which was wrong, not just loose.
+- The wording of D19, which was wrong.
 - Nine changes to its proposals for D9–D19, including the write order, the removal guard, making DECIMAL overflow fail instead of drop, and the tie rule.
 
 Claude also corrected the plan I'd agreed in review. `DESCRIBE HISTORY` doesn't work on pipeline materialized views, and the JSON reader option we'd settled on for population was already in use, and was in fact the cause of the problem.
@@ -155,9 +155,7 @@ This document was drafted with Claude from my decision log and AI log, then edit
 
 ## Retrospective
 
-> **Note to self:** this section is a draft. Rewrite it in your own words. It has to be what *you* found hardest.
-
-The hardest thing to get right was making ingestion genuinely safe to re-run. "Download what changed" sounds simple, but the edge cases kept coming:
+The hardest thing to get right was making ingestion genuinely safe to re-run. I noted the following edge cases as I worked through it:
 
 - a file BLS touches without changing;
 - a file that disappears and comes back;
@@ -166,7 +164,7 @@ The hardest thing to get right was making ingestion genuinely safe to re-run. "D
 
 Each of those became a decision (D7, D10, D19, D24, D25) and a test, and some only showed up once the earlier ones were fixed.
 
-Free Edition's network was the most frustrating part. I spent a while on the LinkedIn verification before accepting that the block was on Databricks' side and moving ingestion to my machine. In hindsight, I'd have tested a plain site like `example.com` straight away, to tell "the platform is blocking me" apart from "BLS is blocking me".
+Free Edition's network was the most frustrating part. I spent a while on the LinkedIn verification before accepting that the block was on Databricks' side and moving ingestion to my machine. In hindsight, I'd have tested a plain site like `example.com` straight away to tell "the platform is blocking me" apart from "BLS is blocking me".
 
 Several things also behaved differently from what I expected or what the docs suggested:
 
@@ -176,7 +174,7 @@ Several things also behaved differently from what I expected or what the docs su
 - `DESCRIBE HISTORY` being refused on materialized views;
 - the update API not reporting development mode, even though the event log does.
 
-None of them was hard on its own, but each cost time. They taught me to verify platform behaviour directly rather than trust a summary of it, including one written by an AI.
+None of them was hard on its own, but each cost time. They taught me to verify platform behaviour directly rather than trust a summary of it, including one written by an AI model.
 
 The source data had its own quirks:
 
@@ -189,3 +187,5 @@ The source data had its own quirks:
 Reading the files rather than trusting the documentation is the habit the brief asks about, and this dataset rewarded it.
 
 If I did it again, I'd test failure paths earlier. Every safeguard I deliberately broke turned out to work, but until I'd watched each one fail on purpose, I was trusting it rather than knowing it.
+
+Thank you for your time and consideration on this. I enjoyed the challenge and learned some new things.
