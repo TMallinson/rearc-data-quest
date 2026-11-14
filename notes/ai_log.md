@@ -484,3 +484,26 @@
     `USE CATALOG` is granted explicitly.
   - **New CLAUDE.md rule:** multi-line Python always goes in a scratchpad script file, never
     inline in a shell command. This followed Claude's four inline-quoting errors.
+
+### Screenshots (my 14 screenshots, Claude's review and README section)
+- **Identifier review:** Claude opened all 14 images. No username, email, workspace URL or
+  other personal identifier is visible.
+  - 03 and 05 show the pipeline details labels "Creator", "Owner" and "Run as", with their
+    values hidden behind the expectations panel.
+  - 02 shows the pipeline ID.
+  - 06 shows the unrelated `interview_prep` schema in the catalog tree. That isn't an
+    identifier; whether to re-crop is my call.
+- **README:** a Screenshots section with all 14 in numbered order under five subheadings,
+  each with a one-line caption. Captions 04/05, 10/11 and 13/14 follow my wording.
+  - Claude noted that 13 shows one Gold table (`gold_q2_best_year`), and pointed the
+    caption to the D38 evidence file for all three.
+  - The Analyst access section links to 13 and 14.
+- **Verification:** a link checker (a scratchpad script, per the new CLAUDE.md rule) found
+  all 24 relative links and images in the README and all 6 in PROCESS.md resolve. The 14
+  screenshots are shown in numbered order; none is unreferenced or gitignored.
+- **PNG metadata check before committing:**
+  - All 14 files carry EXIF and XMP blocks, identical apart from pixel dimensions, holding
+    only macOS's `UserComment: Screenshot`.
+  - A search of every file's raw bytes found none of my identifiers.
+  - Claude's first byte search also matched `@`, which flagged all 14 falsely: that's byte
+    0x40 in compressed image data. It was re-run with the identifier strings only.

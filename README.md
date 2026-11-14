@@ -159,6 +159,89 @@ flowchart LR
   the update stops before Gold changes, so readers keep the last good answers. This was
   tested on the real pipeline: [docs/evidence/phase6_gate_failure_test.txt](docs/evidence/phase6_gate_failure_test.txt).
 
+## Screenshots
+
+Screenshots from the Databricks workspace on 2026-11-13.
+
+### Pipeline (01–02)
+
+**01. The pipeline's dependency graph after a completed update.** Bronze → Silver → checks
+and candidates → `dq_gate` → Gold. Every published Gold table sits downstream of the gate.
+
+![01: pipeline dependency graph](docs/screenshots/01_pipeline_graph.png)
+
+**02. Every dataset in that update, with its duration, output records and expectations.**
+Each is completed, and Bronze row counts match the source files (e.g. `bronze_pr_data`
+138K, `bronze_pr_series` 337).
+
+![02: pipeline tables list](docs/screenshots/02_pipeline_tables_list.png)
+
+### Data quality and the gate (03–05)
+
+**03. Silver's 8 expectations on `silver_pr_data_staged`, each with its action
+(warn/ALLOW, DROP, FAIL).** Each has 0 failed records.
+
+![03: Silver expectations](docs/screenshots/03_silver_expectations.png)
+
+**04. The gate-failure test (Q1 temporarily required to cover 7 years).** The update failed
+at `dq_gate`, and the Gold tables were skipped, so readers kept the last good answers.
+
+![04: gate failure in the dependency graph](docs/screenshots/04_gate_failure_graph.png)
+
+**05. The same failed update: `dq_gate`'s expectations.** `q1_six_years` has 1 failed
+record. This is the check that stopped the update before Gold (D36).
+
+![05: dq_gate expectations in the failed update](docs/screenshots/05_gate_failure_expectations.png)
+
+### Storage (06–08)
+
+**06. The `workspace.rearc_quest` schema: 27 tables across Bronze, Silver, checks and Gold,
+plus the `archive`, `raw` and `state` Volumes.**
+
+![06: catalog tree for workspace.rearc_quest](docs/screenshots/06_catalog_schema.png)
+
+**07. The `raw` Volume's `bls/pr` folder: all 12 files from the BLS directory listing.**
+
+![07: raw Volume, BLS files](docs/screenshots/07_raw_volume_bls.png)
+
+**08. The `raw` Volume's `datausa` folder: the population response saved as JSON.**
+
+![08: raw Volume, DataUSA file](docs/screenshots/08_raw_volume_datausa.png)
+
+### The three answers (09–12)
+
+**09. Q1: 6 years (2013–2018), mean 322,069,808, population standard deviation
+3,796,119.94** (the answer), with sample standard deviation 4,158,441.04 alongside.
+
+![09: Q1 result](docs/screenshots/09_q1_population_stats.png)
+
+**10. Q2, first half of one result** for the two hand-checked series, PRS30006032 and
+PRS84006021: labels, names and basis, with best years 1994 and 1964.
+
+![10: Q2 result, part 1](docs/screenshots/10_q2_best_year_part1.png)
+
+**11. Q2, second half of the same result:** best totals 14.600 and 4.900, quarter counts,
+and PRS84006021's tie with 2010 in `other_tied_years`.
+
+![11: Q2 result, part 2](docs/screenshots/11_q2_best_year_part2.png)
+
+**12. Q3: PRS30006032 Q01 for all 39 years (1988–2026), with population where DataUSA has
+it.** It's NULL for years DataUSA doesn't cover, including 2020.
+
+![12: Q3 result](docs/screenshots/12_q3_series_population.png)
+
+### Analyst access (13–14)
+
+**13. `analysts` has `SELECT` on Gold:** the Permissions tab for `gold_q2_best_year`. All
+three Gold tables are verified in
+[docs/evidence/d38_analyst_grants.txt](docs/evidence/d38_analyst_grants.txt).
+
+![13: Gold table permissions](docs/screenshots/13_gold_permissions.png)
+
+**14. `analysts` has nothing on Silver:** `silver_pr_data` has no permissions granted.
+
+![14: Silver table permissions](docs/screenshots/14_silver_permissions.png)
+
 ## Repository layout
 
 | Path | What it is |
@@ -241,6 +324,8 @@ The `analysts` account group can read the three published Gold tables, and nothi
   grants `SELECT` at schema level, or misses a Gold table.
 - **Evidence:** the grants were verified with `SHOW GRANTS`, and they survive a pipeline
   refresh: [docs/evidence/d38_analyst_grants.txt](docs/evidence/d38_analyst_grants.txt).
+- **Screenshots:** [13: SELECT on a Gold table](docs/screenshots/13_gold_permissions.png)
+  and [14: nothing on Silver](docs/screenshots/14_silver_permissions.png).
 - **Group type:** `analysts` must be an **account** group (SCIM `resourceType: Group`).
   Unity Catalog can't grant to workspace-local groups.
 
