@@ -1,0 +1,64 @@
+# D38: read-only analyst access to Gold (2026-11-13)
+
+## 1. Group type
+  analysts: SCIM meta.resourceType = "Group"  -> an ACCOUNT group (workspace-local would be "WorkspaceGroup")
+
+## 2. Baseline before any grant
+  SHOW GRANTS ON SCHEMA workspace.rearc_quest           -> (no grants)
+  SHOW GRANTS `analysts` ON SCHEMA workspace.rearc_quest -> (nothing)
+  SHOW GRANTS ON CATALOG workspace                        -> only the workspace users group's default USE CATALOG
+
+## 3. Applied by the bundle job (deploy + one run)
+  databricks bundle deploy  -> Resources: 1 created (jobs.rearc_quest_analyst_grants)
+  databricks bundle run rearc_quest_analyst_grants -> TERMINATED SUCCESS
+  file: src/sql/analyst_grants.sql, on the serverless SQL warehouse
+
+## 4. Grants after the job run
+SHOW GRANTS `analysts` ON CATALOG workspace                                     -> USE CATALOG
+SHOW GRANTS `analysts` ON SCHEMA workspace.rearc_quest                         -> USE SCHEMA
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.gold_q1_population_stats -> SELECT
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.gold_q2_best_year       -> SELECT
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.gold_q3_series_population -> SELECT
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.silver_pr_data          -> (nothing)
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.bronze_pr_data          -> (nothing)
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.dq_gate                 -> (nothing)
+SHOW GRANTS `analysts` ON VOLUME workspace.rearc_quest.raw                     -> (nothing)
+information_schema.table_privileges for analysts in rearc_quest: 3 row(s)
+    gold_q1_population_stats | SELECT | NONE
+    gold_q2_best_year | SELECT | NONE
+    gold_q3_series_population | SELECT | NONE
+information_schema.volume_privileges for analysts in rearc_quest: 0 row(s)
+information_schema.schema_privileges for analysts in rearc_quest: 1 row(s)
+    USE_SCHEMA | NONE
+
+## 5. One pipeline update (3cd7256f) refreshed Gold
+  gold_q1_population_stats     last_refreshed=2026-11-13T23:41:56Z  by update 3cd7256f  Succeeded
+  gold_q2_best_year            last_refreshed=2026-11-13T23:41:56Z  by update 3cd7256f  Succeeded
+  gold_q3_series_population    last_refreshed=2026-11-13T23:41:56Z  by update 3cd7256f  Succeeded
+
+## 6. Grants after the refresh (byte-identical to section 4)
+SHOW GRANTS `analysts` ON CATALOG workspace                                     -> USE CATALOG
+SHOW GRANTS `analysts` ON SCHEMA workspace.rearc_quest                         -> USE SCHEMA
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.gold_q1_population_stats -> SELECT
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.gold_q2_best_year       -> SELECT
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.gold_q3_series_population -> SELECT
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.silver_pr_data          -> (nothing)
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.bronze_pr_data          -> (nothing)
+SHOW GRANTS `analysts` ON TABLE  workspace.rearc_quest.dq_gate                 -> (nothing)
+SHOW GRANTS `analysts` ON VOLUME workspace.rearc_quest.raw                     -> (nothing)
+information_schema.table_privileges for analysts in rearc_quest: 3 row(s)
+    gold_q1_population_stats | SELECT | NONE
+    gold_q2_best_year | SELECT | NONE
+    gold_q3_series_population | SELECT | NONE
+information_schema.volume_privileges for analysts in rearc_quest: 0 row(s)
+information_schema.schema_privileges for analysts in rearc_quest: 1 row(s)
+    USE_SCHEMA | NONE
+
+## 7. Compute access: the serverless SQL warehouse's permissions
+  Serverless Starter Warehouse:
+    users    CAN_USE
+    admins   CAN_MANAGE (inherited)
+  -> every workspace user is in `users`, so `analysts` members can use the warehouse
+     through that group; no separate CAN_USE grant was needed.
+  Unity Catalog grants (sections 4 and 6) cover data; warehouse permissions cover compute.
+  An analyst needs both.

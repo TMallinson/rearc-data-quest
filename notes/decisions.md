@@ -1183,3 +1183,77 @@ Status: Failed` shows it to anyone who inspects the table.
 **Rationale:** Gold serves SQL consumers: analysts, Genie and dashboards. Bronze and
 Silver are Python because they need code-level checks, such as the header check
 (D29) and the staged-view expectations (D34).
+
+---
+
+## D38. Read-only analyst access to the published Gold tables only
+
+**Status:** Decided 2026-11-13 (bonus); implemented and verified
+
+**Decision:** the `analysts` account group gets:
+- `USE CATALOG` on `workspace`;
+- `USE SCHEMA` on `workspace.rearc_quest`;
+- `SELECT` on `gold_q1_population_stats`, `gold_q2_best_year` and
+  `gold_q3_series_population`.
+
+It gets **no schema-wide `SELECT`**, which would cover Bronze, Silver, the `dq_*` checks and
+every future table. It gets **nothing** on Bronze, Silver, the checks or any Volume.
+
+**Group type check:**
+- Unity Catalog can't grant to workspace-local groups.
+- `analysts` (created by me in Settings → Identity and access) has SCIM
+  `meta.resourceType: "Group"`, so it's an account group.
+
+**How the grants are applied:**
+- Bundles can declare grants only on catalogs, schemas and Volumes (and some non-data
+  resources), not on tables or materialized views, per the CLI v1.22.1 bundle schema.
+  The `workspace` catalog isn't bundle-managed either.
+- So all five grants live in one idempotent SQL file, `src/sql/analyst_grants.sql`.
+  It's run by the bundle job `rearc_quest_analyst_grants` as a SQL file task on the
+  serverless SQL warehouse, which is looked up by name (`Serverless Starter Warehouse`)
+  through the `warehouse_id` variable.
+- A deploy plus one run reproduces the grants.
+- All grants are in one file, rather than splitting `USE SCHEMA` into the schema
+  resource's `grants`. That keeps one place to read and test. Bundle-managed schema
+  grants can also be authoritative, replacing grants made outside the bundle.
+
+**Guard:** `tests/test_grants.py` fails if the file:
+- grants anything on a non-Gold object;
+- grants `SELECT` at schema or catalog level;
+- grants any other privilege;
+- grants to another principal;
+- misses a Gold table.
+
+The Gold table set is read from `gold.sql`. Self-tests feed it a schema-level `SELECT`;
+grants on Silver, Bronze, `dq_gate` and the `raw` Volume; `MODIFY`; `ALL PRIVILEGES`; and
+a missing Gold grant. A second test checks the job runs the file on a warehouse with no
+cluster settings.
+
+**Verification** (evidence in `docs/evidence/d38_analyst_grants.txt`):
+- **Before:** no grants on the schema; nothing for `analysts`.
+- **After the job run:** `SHOW GRANTS` gives `analysts` `USE CATALOG` on `workspace`,
+  `USE SCHEMA` on `rearc_quest`, and `SELECT` on each of the three Gold tables.
+- **Nothing** on `silver_pr_data`, `bronze_pr_data`, `dq_gate` or the `raw` Volume.
+- **information_schema, inheritance included:** exactly 3 table privileges for `analysts`
+  (the Gold tables, all `inherited_from: NONE`) and 0 Volume privileges. So no schema-wide
+  grant is hiding.
+- **Survives refresh:** pipeline update `3cd7256f` refreshed all three Gold tables
+  (23:41:56). The grants output afterwards was byte-identical.
+
+**Compute access (warehouse permissions):**
+- Unity Catalog grants cover data. Warehouse permissions cover compute. An analyst needs both.
+- The `Serverless Starter Warehouse`'s permissions give `users` `CAN_USE` (and `admins`
+  `CAN_MANAGE`, inherited). Every workspace user belongs to `users` automatically, so
+  members of `analysts` can already use the warehouse. No separate grant was made.
+- **Trade-off:** this relies on the `users` default, whereas `USE CATALOG` is granted to
+  `analysts` explicitly. If the default were ever removed, analysts would lose compute
+  access while keeping their data grants.
+
+**Known limits, for PROCESS.md:**
+- The SQL file is additive. Re-running it can't remove a privilege someone grants by
+  hand, so drift is detected by re-checking, not prevented.
+- Members of `analysts` are also workspace users, so they keep whatever that group holds.
+  Today that's only `USE CATALOG` on `workspace`.
+- Grants on a pipeline materialized view survive refreshes. They would be lost if the
+  dataset were dropped and recreated (renamed, or changed from a materialized view to a
+  streaming table), so after such a change the job must be re-run.

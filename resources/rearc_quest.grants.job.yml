@@ -1,0 +1,16 @@
+# D38: applies src/sql/analyst_grants.sql on the serverless SQL warehouse.
+# Bundles can declare grants on catalogs, schemas and Volumes, but not on tables or
+# materialized views, so the Gold SELECT grants live in one idempotent SQL file run by
+# this job. A deploy plus one run reproduces them. No cluster settings: the SQL task runs
+# on the warehouse.
+resources:
+  jobs:
+    rearc_quest_analyst_grants:
+      name: rearc_quest_analyst_grants
+      tasks:
+        - task_key: apply_analyst_grants
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file:
+              path: ../src/sql/analyst_grants.sql
+              source: WORKSPACE

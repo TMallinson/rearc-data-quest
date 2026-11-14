@@ -13,6 +13,10 @@ variables:
   schema:
     description: Schema holding the Volumes and pipeline tables
     default: rearc_quest
+  warehouse_id:
+    description: Serverless SQL warehouse that runs the analyst grants job (D38)
+    lookup:
+      warehouse: Serverless Starter Warehouse
 
 targets:
   # No `mode: development`: it would prefix every name with the workspace username,

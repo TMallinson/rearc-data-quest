@@ -424,3 +424,63 @@
   Recorded in D36.
 - **Claude's mistake:** its first per-dataset status query took each dataset's last event,
   which often has no status. It re-queried using the last event that carries one.
+
+### Phase 7: deliverables (drafts for my review)
+- **History scan** (every blob in all 8 commits, 82 file versions, plus commit metadata):
+  - No match for my email, my workspace username or the workspace login's email domain.
+  - No 8-word phrase shared with `private/quest.md`.
+  - The only partial matches on my name are the GitHub noreply author address.
+  - The workspace host appears only in `databricks.yml`, pinned on purpose.
+- **Fresh clone** from GitHub into a temporary folder, with a new `.venv`:
+  - install OK; pytest 101 passed; `bundle validate --strict` OK.
+  - Ingestion without `.env` exits 2 with a configuration message.
+  - Outside git, by design: `.env` (BLS User-Agent, needed only to ingest), the `rearc`
+    CLI profile (to validate, deploy or ingest) and `private/` (never needed).
+  - Workspace-specific: the pinned host in `databricks.yml`.
+- **Claude drafted:**
+  - `README.md` as the reviewer's entry point: answers, Mermaid architecture, setup,
+    deploy, ingestion, exit codes, expected warnings.
+  - `PROCESS.md`: Architecture and Trade-offs as prose (2,057 words); AI usage and
+    Retrospective as fact notes from this log, for me to write.
+- **Free Edition support check:**
+  - The docs don't state support explicitly. The limitations page says no account console
+    or account-level APIs, no SCIM, and no legacy features.
+  - Claude added read-only evidence from the workspace: a custom group exists; UC grants
+    can be read; the dashboards API lists; a sample Genie space exists.
+  - Nothing was created to test it.
+
+### Bonus: read-only analyst access (D38)
+- **My setup:** I created the `analysts` group and set the rules: Gold `SELECT` only, no
+  schema-wide `SELECT`, nothing on Bronze, Silver, the checks or the Volumes.
+- **Claude checked, rather than assumed:**
+  - `analysts` is an account group (SCIM `resourceType: Group`).
+  - Bundles can't declare table or materialized-view grants (CLI bundle schema: grants
+    only on catalog, schema, Volume and non-data resources).
+- **Claude drafted:**
+  - `src/sql/analyst_grants.sql`;
+  - the job `rearc_quest_analyst_grants` (SQL file task on the serverless warehouse, looked
+    up by name);
+  - `tests/test_grants.py` (the guard plus 4 self-tests and a job-shape test);
+  - the README section and the one-paragraph PROCESS.md change.
+- **Claude's choice, for my review:** all grants in the SQL file, rather than putting
+  `USE SCHEMA` into the bundle's schema `grants`.
+- **Claude's mistakes:**
+  - A fourth inline-Python quoting error, after saying it would stop.
+  - A loop variable named `GID`, which is read-only in zsh.
+  - The new `warehouse_id` lookup variable broke `test_ingestion_settings_match_the_bundle`,
+    which read every variable's `default`. The test was fixed to skip lookup variables.
+- **Verification:**
+  - pytest: 107 passed.
+  - Strict validation OK; the plan added 1 job; deploy and run gave `TERMINATED SUCCESS`.
+  - `SHOW GRANTS` and information_schema (inheritance included) show exactly the intended
+    five privileges, and nothing on Silver, Bronze, `dq_gate` or `raw`.
+  - Pipeline update `3cd7256f` refreshed Gold, and the grants output afterwards was
+    byte-identical.
+- **Before committing (my additions):**
+  - **Warehouse access:** Claude checked the warehouse's permissions. `users` has
+    `CAN_USE`, so `analysts` members can already use it, and no grant was made. D38 now
+    says data grants and compute permissions are separate, and an analyst needs both.
+  - **Claude flagged an inconsistency:** relying on the `users` default here, while
+    `USE CATALOG` is granted explicitly.
+  - **New CLAUDE.md rule:** multi-line Python always goes in a scratchpad script file, never
+    inline in a shell command. This followed Claude's four inline-quoting errors.

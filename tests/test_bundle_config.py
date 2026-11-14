@@ -78,7 +78,7 @@ def test_ingestion_settings_match_the_bundle():
 
     defaults = Settings(bls_user_agent="x", datausa_user_agent="x")
     bundle = yaml.safe_load((REPO / "databricks.yml").read_text())
-    variables = {name: spec["default"] for name, spec in bundle["variables"].items()}
+    variables = {name: spec["default"] for name, spec in bundle["variables"].items() if "default" in spec}
     assert (defaults.catalog, defaults.schema) == (variables["catalog"], variables["schema"])
 
     resources = _load_resources(REPO)

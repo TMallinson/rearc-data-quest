@@ -53,6 +53,7 @@
 - Use pytest for the pure-Python logic (change detection, listing parsing), with no network or Spark needed.
 - Never commit `private/`, `.env`, credentials, or data files.
 - After I approve a phase's commit, push it to `origin` (`main`). Don't push anything I haven't approved.
+- Multi-line Python always goes in a script file in the scratchpad, never inline in a shell command.
 - Ask before any destructive command: deleting files, overwriting existing data, dropping tables, `bundle destroy`.
 - Free Edition has a daily compute quota, so don't rerun pipelines in a loop while debugging. Ask me first.
 - At the end of each session, append to `notes/ai_log.md`: the date, what you drafted, what I changed or rejected, and how we verified it.
